@@ -1299,3 +1299,407 @@ tosumu is a learning project about building a small, correct, encrypted, page-ba
 Trying to be all of those would make it none of them.
 
 The right architecture for a real system is: **tosumu stores records, specialized engines index them**. Keep the separation of concerns clean.
+
+---
+
+## 18. Platform support and mobile deployment
+
+tosumu's embedded architecture (single-file, single-process, no server) makes it naturally suitable for mobile platforms. This section documents the plan for iOS and Android support, targeted for Stage 7+.
+
+### 18.1 Why mobile is viable
+
+**Rust officially supports mobile targets:**
+- iOS: `aarch64-apple-ios` (64-bit ARM devices), `aarch64-apple-ios-sim` (M1 simulator), `x86_64-apple-ios` (Intel simulator)
+- Android: `aarch64-linux-android` (ARM64, modern phones), `armv7-linux-androideabi` (ARM32, older phones), `x86_64-linux-android` (emulator)
+
+**tosumu's design is mobile-friendly:**
+- ✅ Single-file storage (works on mobile filesystems)
+- ✅ No network, no server process (perfect for embedded use)
+- ✅ Small footprint (Rust produces compact binaries)
+- ✅ No platform-specific dependencies (RustCrypto works everywhere)
+- ✅ Same architecture as SQLite (which runs on billions of mobile devices)
+
+**Crypto dependencies are portable:**
+- ChaCha20-Poly1305, Argon2id, HKDF from RustCrypto are pure Rust implementations
+- Already used in mobile apps (Signal, 1Password use RustCrypto)
+- No AES-NI requirement, no OS-specific crypto APIs
+
+### 18.2 Implementation plan (Stage 7+)
+
+#### Stage 7a — C FFI layer
+
+Create `crates/tosumu-ffi` with a C-compatible API for foreign language bindings:
+
+```rust
+// crates/tosumu-ffi/src/lib.rs
+
+#[repr(C)]
+pub struct TDB {
+    // Opaque handle to Database
+}
+
+#[no_mangle]
+pub extern "C" fn tosumu_open(
+    path: *const c_char,
+    passphrase: *const u8,
+    passphrase_len: usize
+) -> *mut TDB;
+
+#[no_mangle]
+pub extern "C" fn tosumu_put(
+    db: *mut TDB,
+    key: *const u8,
+    key_len: usize,
+    value: *const u8,
+    value_len: usize
+) -> i32;
+
+#[no_mangle]
+pub extern "C" fn tosumu_get(
+    db: *mut TDB,
+    key: *const u8,
+    key_len: usize,
+    value_out: *mut *mut u8,
+    value_len_out: *mut usize
+) -> i32;
+
+#[no_mangle]
+pub extern "C" fn tosumu_close(db: *mut TDB);
+
+#[no_mangle]
+pub extern "C" fn tosumu_free_value(value: *mut u8);
+```
+
+**Alternative:** Use `uniffi-rs` (Mozilla's FFI generator) to auto-generate Swift, Kotlin, and Python bindings from Rust trait definitions. Less boilerplate, used by Firefox mobile.
+
+**Acceptance:**
+- C FFI compiles on Linux/macOS/Windows
+- Test harness in C verifies API works
+- Memory safety: no leaks, no use-after-free (run with Valgrind/AddressSanitizer)
+
+#### Stage 7b — iOS support
+
+**Build for iOS:**
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+cargo install cargo-lipo
+cargo lipo --release --targets aarch64-apple-ios,aarch64-apple-ios-sim
+# Produces universal .a library for Xcode
+```
+
+**Swift wrapper library:**
+```swift
+// TosumuKit/Sources/TosumuKit/Database.swift
+import Foundation
+
+public class TosumuDB {
+    private var handle: OpaquePointer?
+    
+    public init(path: String, passphrase: String) throws {
+        let cPath = path.cString(using: .utf8)
+        let cPass = passphrase.data(using: .utf8)!
+        
+        handle = cPass.withUnsafeBytes { passPtr in
+            tosumu_open(cPath, passPtr.baseAddress, cPass.count)
+        }
+        
+        guard handle != nil else {
+            throw TosumuError.openFailed
+        }
+    }
+    
+    public func put(key: Data, value: Data) throws {
+        let result = key.withUnsafeBytes { keyPtr in
+            value.withUnsafeBytes { valPtr in
+                tosumu_put(handle, keyPtr.baseAddress, key.count,
+                          valPtr.baseAddress, value.count)
+            }
+        }
+        guard result == 0 else { throw TosumuError.writeFailed }
+    }
+    
+    public func get(key: Data) throws -> Data? {
+        var valuePtr: UnsafeMutablePointer<UInt8>? = nil
+        var valueLen: Int = 0
+        
+        let result = key.withUnsafeBytes { keyPtr in
+            tosumu_get(handle, keyPtr.baseAddress, key.count,
+                      &valuePtr, &valueLen)
+        }
+        
+        guard result == 0 else { throw TosumuError.readFailed }
+        guard let ptr = valuePtr else { return nil }
+        
+        defer { tosumu_free_value(ptr) }
+        return Data(bytes: ptr, count: valueLen)
+    }
+    
+    deinit {
+        if let h = handle {
+            tosumu_close(h)
+        }
+    }
+}
+
+public enum TosumuError: Error {
+    case openFailed, writeFailed, readFailed
+}
+```
+
+**iOS Keychain protector:**
+
+Add a new `IosKeychainProtector` (§8.6) to replace the unavailable `TpmProtector`:
+
+```rust
+// Feature: ios-keychain
+// Uses Security framework to store KEK in iOS Keychain (hardware-backed on devices with Secure Enclave)
+
+#[cfg(feature = "ios-keychain")]
+pub struct IosKeychainProtector {
+    service: String,  // e.g. "com.yourapp.tosumu"
+    account: String,  // e.g. database UUID
+}
+
+impl KeyProtector for IosKeychainProtector {
+    fn derive_kek(&self, meta: &ProtectorMetadata, input: &ProtectorInput)
+        -> Result<Zeroizing<[u8; 32]>>
+    {
+        // kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        // Retrieve 32-byte KEK from Keychain
+        // Falls back to passphrase if Keychain unavailable
+    }
+}
+```
+
+**Demo app:**
+SwiftUI app demonstrating encrypted note storage using tosumu.
+
+**Acceptance:**
+- Builds for iOS devices and simulator
+- Demo app runs on physical iPhone
+- Keychain protector stores KEK in Secure Enclave
+- Database persists across app restarts
+
+#### Stage 7c — Android support
+
+**Build for Android:**
+```bash
+rustup target add aarch64-linux-android
+cargo install cargo-ndk
+cargo ndk --target aarch64-linux-android --platform 21 -- build --release
+# Produces .so library for JNI
+```
+
+**Kotlin wrapper library:**
+```kotlin
+// com/yourapp/tosumu/Database.kt
+package com.yourapp.tosumu
+
+class TosumuDB {
+    private var handle: Long = 0
+    
+    companion object {
+        init {
+            System.loadLibrary("tosumu_ffi")
+        }
+    }
+    
+    external fun tosumuOpen(path: String, passphrase: ByteArray): Long
+    external fun tosumuPut(handle: Long, key: ByteArray, value: ByteArray): Int
+    external fun tosumuGet(handle: Long, key: ByteArray): ByteArray?
+    external fun tosumuClose(handle: Long)
+    
+    fun open(path: String, passphrase: String) {
+        handle = tosumuOpen(path, passphrase.toByteArray(Charsets.UTF_8))
+        if (handle == 0L) throw TosumuException("Failed to open database")
+    }
+    
+    fun put(key: ByteArray, value: ByteArray) {
+        val result = tosumuPut(handle, key, value)
+        if (result != 0) throw TosumuException("Write failed")
+    }
+    
+    fun get(key: ByteArray): ByteArray? {
+        return tosumuGet(handle, key)
+    }
+    
+    fun close() {
+        if (handle != 0L) {
+            tosumuClose(handle)
+            handle = 0
+        }
+    }
+}
+
+class TosumuException(message: String) : Exception(message)
+```
+
+**Android Keystore protector:**
+
+Add `AndroidKeystoreProtector` (§8.6):
+
+```rust
+// Feature: android-keystore
+// Uses Android Keystore (hardware-backed on modern devices) to wrap KEK
+
+#[cfg(feature = "android-keystore")]
+pub struct AndroidKeystoreProtector {
+    alias: String,  // Keystore key alias
+}
+
+impl KeyProtector for AndroidKeystoreProtector {
+    fn derive_kek(&self, meta: &ProtectorMetadata, input: &ProtectorInput)
+        -> Result<Zeroizing<[u8; 32]>>
+    {
+        // Call JNI to Android KeyStore API
+        // Wrap/unwrap KEK using hardware-backed AES key
+        // Requires API 23+ (Marshmallow)
+    }
+}
+```
+
+**Demo app:**
+Jetpack Compose app demonstrating encrypted task list using tosumu.
+
+**Acceptance:**
+- Builds for Android ARM64 (minSdk 21, targetSdk 34)
+- Demo app runs on physical Android device
+- Keystore protector uses hardware-backed key
+- Database persists across app restarts
+
+### 18.3 Platform-specific considerations
+
+#### File system and permissions
+
+**iOS:**
+- Apps run in sandboxed container (`/var/mobile/Containers/Data/Application/{UUID}/`)
+- Store database in `Documents/` (user-visible, backed up) or `Library/Application Support/` (hidden, backed up)
+- No special permissions needed
+
+**Android:**
+- Apps have private storage (`/data/data/{package}/`) — no permissions needed
+- External storage (`/sdcard/`) requires `WRITE_EXTERNAL_STORAGE` permission (deprecated in API 30+)
+- Recommended: use app-specific private directory (`context.filesDir`)
+
+#### Protector availability
+
+| Protector | Desktop | iOS | Android | Notes |
+|-----------|---------|-----|---------|-------|
+| Passphrase | ✅ | ✅ | ✅ | Universal |
+| RecoveryKey | ✅ | ✅ | ✅ | Universal |
+| Keyfile | ✅ | ⚠️ | ⚠️ | Limited (iOS/Android restrict file access) |
+| Tpm | ✅ (Windows/Linux) | ❌ | ❌ | Desktop only |
+| IosKeychain | ❌ | ✅ | ❌ | iOS only (Secure Enclave) |
+| AndroidKeystore | ❌ | ❌ | ✅ | Android only (hardware-backed) |
+
+**Design implication:** Protector abstraction (§8.6) cleanly handles platform differences. Each platform gets its own hardware-backed protector; the core engine is unchanged.
+
+#### CLI not useful on mobile
+
+- `tosumu-cli` binary won't run on iOS/Android (no shell access)
+- Mobile apps embed `tosumu-core` library directly via FFI
+- All operations through programmatic API, not CLI subcommands
+
+#### Testing on mobile
+
+**iOS testing:**
+- Unit tests run via `cargo test` on macOS
+- Integration tests run on iOS simulator via `cargo test --target aarch64-apple-ios-sim`
+- Manual testing on physical iPhone (requires Apple Developer account)
+
+**Android testing:**
+- Unit tests run via `cargo test` on Linux
+- Integration tests run on Android emulator (requires Android SDK)
+- Manual testing on physical Android device (enable USB debugging)
+
+### 18.4 Performance expectations
+
+**Expected performance vs desktop:**
+- **Similar or better:** Modern ARM chips (A17 Pro, Snapdragon 8 Gen 3) rival desktop CPUs
+- **I/O may be slower:** Mobile flash is optimized for power, not raw throughput
+- **Battery impact:** Crypto operations (Argon2id) should use conservative parameters on mobile
+
+**Argon2id tuning for mobile:**
+```rust
+// Desktop: 128 MB, 8 iterations, 4 threads
+Argon2id { m: 128_000, t: 8, p: 4 }
+
+// Mobile: 64 MB, 4 iterations, 2 threads (preserve battery)
+Argon2id { m: 64_000, t: 4, p: 2 }
+```
+
+### 18.5 Distribution and packaging
+
+**iOS:**
+- Distribute as **Swift Package** (SPM) or **CocoaPod**
+- Include prebuilt `libtosumu_ffi.a` (universal binary) + Swift wrapper
+- Xcode automatically links with app
+
+**Android:**
+- Distribute as **AAR** (Android Archive) via Maven Central or GitHub Packages
+- Include `.so` libraries for `arm64-v8a`, `armeabi-v7a`, `x86_64` architectures
+- Gradle automatically bundles with APK
+
+**Binary size:**
+- Rust release build: ~500 KB (stripped)
+- With RustCrypto dependencies: ~800 KB
+- Per-architecture overhead: iOS universal binary ~1.5 MB, Android multi-arch ~2.5 MB
+
+### 18.6 Security considerations on mobile
+
+**Advantages:**
+- ✅ Hardware-backed key storage (Secure Enclave on iOS, TEE on Android)
+- ✅ Biometric authentication (Touch ID, Face ID, fingerprint) can unlock Keychain/Keystore protector
+- ✅ Apps can't access other apps' databases (OS-level sandboxing)
+
+**Risks:**
+- ⚠️ Screen lock bypass → attacker gains file access (but database still encrypted)
+- ⚠️ Backup exposure (iCloud/Google Drive backups may store database file; passphraseprotector alone is vulnerable)
+- ⚠️ Jailbreak/root → OS security model bypassed
+
+**Mitigation:**
+- Recommend `IosKeychainProtector` / `AndroidKeystoreProtector` over passphrase-only
+- Document that backups include encrypted database (user must protect backup separately)
+- Add `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` flag (iOS) to prevent cloud backup of Keychain items
+
+### 18.7 What this section does *not* promise
+
+- No WebAssembly (WASM) support. File I/O in browsers is limited; IndexedDB is the better choice.
+- No cross-platform mobile framework bindings (React Native, Flutter). FFI layer is C-compatible; community can build bindings.
+- No mobile-specific optimizations (e.g., adaptive page size for flash characteristics). Desktop settings work fine.
+- No "lite" mode. Full tosumu feature set on mobile. If it's too heavy, the app can use SQLite instead.
+
+### 18.8 Precedents
+
+**Rust databases on mobile:**
+- **redb** (embedded key/value store): Runs on iOS/Android, used in production apps
+- **sled** (embedded key/value store): Mobile-compatible
+- **rusqlite** (SQLite bindings): Widely deployed on mobile
+
+**Rust crypto on mobile:**
+- **Signal** (messaging app): Rust crypto library on iOS/Android
+- **1Password** (password manager): Rust security components
+- **Mullvad VPN**: Rust client on mobile
+
+**If SQLite can do it, tosumu can do it.** Same architecture, same constraints, same capabilities.
+
+### 18.9 Timeline and staging
+
+**Not before Stage 6 complete.** Mobile support is an extension, not a core goal. Desktop platforms (Linux/macOS/Windows) must be stable first.
+
+**Estimated effort:**
+- Stage 7a (FFI layer): 1 week
+- Stage 7b (iOS): 2 weeks
+- Stage 7c (Android): 2 weeks
+- **Total: 5 weeks** for full mobile support
+
+**Success criteria:**
+- Demo iOS app and demo Android app both:
+  - Create encrypted database
+  - Insert/retrieve records
+  - Persist across app restarts
+  - Use hardware-backed key storage (Keychain/Keystore)
+- FFI layer has comprehensive tests (memory safety, error handling)
+- Documented in README with "mobile" badge
+
+---
