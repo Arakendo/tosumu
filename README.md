@@ -18,11 +18,11 @@ The name is a conlang word: `to` (knowledge) + `su` (organized structure) + `mu`
 
 ## What it aims to be
 
-- **Single-file, single-process, embedded** — like SQLite in shape.
+- **Single-file, single-process, embedded** — like SQLite in shape. Runs on desktop (Linux, macOS, Windows) and mobile (iOS, Android via Stage 7+ FFI layer).
 - **Page-based** — 4 KB pages, slotted layout, B+ tree index.
 - **Write-ahead log** — physical (full-page) logging, crash-recoverable.
 - **Per-page AEAD** — ChaCha20-Poly1305, with page number, version, and type bound as AAD.
-- **Envelope encryption** — random DEK per database; DEK wrapped by one or more **protectors** (passphrase, recovery key, keyfile, TPM). Rotate a passphrase without rewriting pages.
+- **Envelope encryption** — random DEK per database; DEK wrapped by one or more **protectors** (passphrase, recovery key, keyfile, TPM on desktop, Keychain on iOS, Keystore on Android). Rotate a passphrase without rewriting pages.
 - **Explicit migrations** — safe additive migrations run automatically; destructive ones require an explicit call. See `DESIGN.md §12`.
 - **Finishable by a mortal.** Staged roadmap, each stage runnable and testable on its own.
 
@@ -36,7 +36,7 @@ The name is a conlang word: `to` (knowledge) + `su` (organized structure) + `mu`
 
 ## Roadmap
 
-See `DESIGN.md §11`. In brief:
+See `DESIGN.md §11` for desktop stages and `DESIGN.md §18` for mobile platform support. In brief:
 
 | Stage | Focus |
 |---|---|
@@ -48,6 +48,7 @@ See `DESIGN.md §11`. In brief:
 | 4c | Optional TPM protector (feature-flagged) |
 | 5 | Toy SQL layer |
 | 6 | Stretch: MVCC, secondary indexes, benchmarks |
+| 7+ | Mobile: FFI layer, iOS (Keychain protector), Android (Keystore protector) |
 
 ## Build
 
