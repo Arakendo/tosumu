@@ -1,0 +1,21 @@
+[package]
+name = "tosumu-cli"
+description = "Command-line interface for the tosumu embedded database."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+
+[[bin]]
+name = "tosumu"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+tosumu-core = { path = "../tosumu-core" }
