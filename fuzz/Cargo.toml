@@ -1,0 +1,21 @@
+[package]
+name = "tosumu-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "fuzz_page_decode"
+path = "fuzz_targets/fuzz_page_decode.rs"
+test = false
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tosumu-core = { path = "../crates/tosumu-core" }
+
+[profile.release]
+debug = 1

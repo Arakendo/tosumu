@@ -109,6 +109,16 @@ impl Pager {
 
     // ── Page access ──────────────────────────────────────────────────────────
 
+    /// Decrypt page `pgno` and return `(plaintext, page_version)`.
+    ///
+    /// Prefer `with_page` for normal reads; this is for inspection tooling that
+    /// also needs the page_version field.
+    pub fn read_page(&self, pgno: u64) -> Result<([u8; PAGE_PLAINTEXT_SIZE], u64)> {
+        assert!(pgno != 0, "pgno 0 is the file header, not an encrypted page");
+        let frame = self.read_frame(pgno)?;
+        decrypt_page(&self.page_key, pgno, &frame)
+    }
+
     /// Read-only access to page `pgno`. Closure receives the decrypted plaintext.
     pub fn with_page<F, T>(&self, pgno: u64, f: F) -> Result<T>
     where
