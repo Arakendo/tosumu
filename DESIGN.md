@@ -1269,7 +1269,7 @@ Split into three sub-stages because key management is its own discipline and cra
 
 ---
 
-## 12. Format evolution and migration policy
+## 13. Format evolution and migration policy
 
 Humans are terrible migration engines. The file format will change; the engine’s job is to detect that, do the safe thing automatically, and refuse loudly when the safe thing is not possible. This section is normative: every format change must declare which category it belongs to and which rules apply.
 
@@ -1546,18 +1546,18 @@ Conventions:
 
 This section explicitly addresses indexing features beyond a basic B+ tree, so the project scope is honest and the "finishable by a mortal" goal stays intact.
 
-### 17.1 What tosumu *does* support (Stages 1–6)
+### 18.1 What tosumu *does* support (Stages 1–6)
 
 - **Primary key index** (Stage 2): B+ tree over the primary key. Supports point lookups (`get(key)`) and range scans (`scan(start_key..end_key)`).
 - **Secondary indexes** (Stage 6, stretch): Additional B+ trees mapping `(secondary_key, primary_key)`. Standard relational DB feature. Supports lookups like `SELECT * FROM users WHERE email = ?`.
 
 That's it. That's the entire indexing story for tosumu as designed.
 
-### 17.2 What tosumu explicitly does *not* support
+### 18.2 What tosumu explicitly does *not* support
 
 The following advanced indexing features are **out of scope** for Stages 1–6 and are unlikely to be added to the core engine:
 
-#### 17.2.1 Finite State Transducers (FSTs)
+#### 18.2.1 Finite State Transducers (FSTs)
 
 **What:** Compressed trie structure mapping strings → values, used by Tantivy (Lucene's Rust cousin) for dictionary lookups and prefix search. Orders of magnitude more space-efficient than a B+ tree for string keys with common prefixes.
 
@@ -1569,7 +1569,7 @@ The following advanced indexing features are **out of scope** for Stages 1–6 a
 **If you wanted it:**
 Build a separate `tosumu-fst` crate wrapping the `fst` crate from BurntSushi. Store the FST as a blob in a tosumu record, rebuild it periodically. Treat tosumu as dumb storage and the FST as an external index.
 
-#### 17.2.2 Full-text search (Lucene-style inverted indexes)
+#### 18.2.2 Full-text search (Lucene-style inverted indexes)
 
 **What:** Tokenize documents, build inverted index mapping `term → [doc_id, doc_id, ...]`, support boolean queries (`"rust" AND "database"`), ranking (TF-IDF, BM25), highlighting.
 
@@ -1581,7 +1581,7 @@ Build a separate `tosumu-fst` crate wrapping the `fst` crate from BurntSushi. St
 **If you wanted it:**
 Use Tantivy or MeiliSearch as the index layer. Store document IDs in tosumu, forward search queries to the indexer, fetch the resulting doc IDs from tosumu. Don't try to build a search engine inside a key/value store.
 
-#### 17.2.3 Vector / embedding search (semantic / AI-powered search)
+#### 18.2.3 Vector / embedding search (semantic / AI-powered search)
 
 **What:** Store high-dimensional vectors (e.g. sentence embeddings from BERT, CLIP image vectors), support approximate nearest neighbor (ANN) queries, return top-K most similar items. Used for semantic search, recommendation, RAG pipelines.
 
@@ -1596,7 +1596,7 @@ Use Tantivy or MeiliSearch as the index layer. Store document IDs in tosumu, for
 - Query the vector DB for top-K doc IDs, then fetch the metadata from tosumu.
 - Or: use the `hnswlib-rs` crate to build an in-memory HNSW index over tosumu-stored vectors on startup. Treat tosumu as durable storage for the graph, reconstruct the index in RAM.
 
-#### 17.2.4 Fuzzy / typo-tolerant search
+#### 18.2.4 Fuzzy / typo-tolerant search
 
 **What:** Match queries with up to N typos (Levenshtein distance), support prefix/suffix wildcards, phonetic matching (Soundex, Metaphone).
 
@@ -1612,7 +1612,7 @@ Use Tantivy or MeiliSearch as the index layer. Store document IDs in tosumu, for
 - Or: store phonetic hashes (Soundex codes) as secondary keys, query by phonetic hash.
 - Or: use an external fuzzy-search library (like `fuzzy-matcher` or `nucleo` crates) against an in-memory key list loaded from tosumu.
 
-### 17.3 What *could* be added as extensions (hypothetical Stage 7+)
+### 18.3 What *could* be added as extensions (hypothetical Stage 7+)
 
 If tosumu reaches Stage 6 and someone wants to continue the learning journey, here are reasonable next steps that don't violate the core design:
 
@@ -1646,7 +1646,7 @@ Support `CREATE INDEX idx ON users(last_name, first_name)`. Requires extending t
 
 **Complexity:** Low-medium. Natural Stage 6 extension.
 
-### 17.4 What will *never* be added
+### 18.4 What will *never* be added
 
 Some features are fundamentally incompatible with tosumu's design or goals:
 
@@ -1655,7 +1655,7 @@ Some features are fundamentally incompatible with tosumu's design or goals:
 - **Streaming / time-series ingestion.** High-write-rate time-series workloads want a specialized engine (TimescaleDB, InfluxDB, QuestDB). tosumu's WAL and B+ tree are not optimized for append-heavy loads.
 - **Graph queries (Cypher, SPARQL).** Graph traversal algorithms (BFS, shortest path, pattern matching) need adjacency-list or edge-list representations. Store graphs in Neo4j, or build a graph layer on top of tosumu as an experiment, but it won't be first-class.
 
-### 17.5 The honest answer
+### 18.5 The honest answer
 
 If you need full-text search, use **Tantivy** or **MeiliSearch**.
 If you need vector search, use **Qdrant** or **pgvector**.
@@ -1674,7 +1674,7 @@ The right architecture for a real system is: **tosumu stores records, specialize
 
 tosumu's embedded architecture (single-file, single-process, no server) makes it naturally suitable for mobile platforms. This section documents the plan for iOS and Android support, targeted for Stage 7+.
 
-### 18.1 Why mobile is viable
+### 19.1 Why mobile is viable
 
 **Rust officially supports mobile targets:**
 - iOS: `aarch64-apple-ios` (64-bit ARM devices), `aarch64-apple-ios-sim` (M1 simulator), `x86_64-apple-ios` (Intel simulator)
@@ -1692,7 +1692,7 @@ tosumu's embedded architecture (single-file, single-process, no server) makes it
 - Already used in mobile apps (Signal, 1Password use RustCrypto)
 - No AES-NI requirement, no OS-specific crypto APIs
 
-### 18.2 Implementation plan (Stage 7+)
+### 19.2 Implementation plan (Stage 7+)
 
 #### Stage 7a — C FFI layer
 
@@ -1935,7 +1935,7 @@ Jetpack Compose app demonstrating encrypted task list using tosumu.
 - Keystore protector uses hardware-backed key
 - Database persists across app restarts
 
-### 18.3 Platform-specific considerations
+### 19.3 Platform-specific considerations
 
 #### File system and permissions
 
@@ -1980,7 +1980,7 @@ Jetpack Compose app demonstrating encrypted task list using tosumu.
 - Integration tests run on Android emulator (requires Android SDK)
 - Manual testing on physical Android device (enable USB debugging)
 
-### 18.4 Performance expectations
+### 19.4 Performance expectations
 
 **Expected performance vs desktop:**
 - **Similar or better:** Modern ARM chips (A17 Pro, Snapdragon 8 Gen 3) rival desktop CPUs
@@ -1996,7 +1996,7 @@ Argon2id { m: 128_000, t: 8, p: 4 }
 Argon2id { m: 64_000, t: 4, p: 2 }
 ```
 
-### 18.5 Distribution and packaging
+### 19.5 Distribution and packaging
 
 **iOS:**
 - Distribute as **Swift Package** (SPM) or **CocoaPod**
@@ -2013,7 +2013,7 @@ Argon2id { m: 64_000, t: 4, p: 2 }
 - With RustCrypto dependencies: ~800 KB
 - Per-architecture overhead: iOS universal binary ~1.5 MB, Android multi-arch ~2.5 MB
 
-### 18.6 Security considerations on mobile
+### 19.6 Security considerations on mobile
 
 **Advantages:**
 - ✅ Hardware-backed key storage (Secure Enclave on iOS, TEE on Android)
@@ -2030,14 +2030,14 @@ Argon2id { m: 64_000, t: 4, p: 2 }
 - Document that backups include encrypted database (user must protect backup separately)
 - Add `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` flag (iOS) to prevent cloud backup of Keychain items
 
-### 18.7 What this section does *not* promise
+### 19.7 What this section does *not* promise
 
 - No WebAssembly (WASM) support. File I/O in browsers is limited; IndexedDB is the better choice.
 - No cross-platform mobile framework bindings (React Native, Flutter). FFI layer is C-compatible; community can build bindings.
 - No mobile-specific optimizations (e.g., adaptive page size for flash characteristics). Desktop settings work fine.
 - No "lite" mode. Full tosumu feature set on mobile. If it's too heavy, the app can use SQLite instead.
 
-### 18.8 Precedents
+### 19.8 Precedents
 
 **Rust databases on mobile:**
 - **redb** (embedded key/value store): Runs on iOS/Android, used in production apps
@@ -2051,7 +2051,7 @@ Argon2id { m: 64_000, t: 4, p: 2 }
 
 **If SQLite can do it, tosumu can do it.** Same architecture, same constraints, same capabilities.
 
-### 18.9 Timeline and staging
+### 19.9 Timeline and staging
 
 **Not before Stage 6 complete.** Mobile support is an extension, not a core goal. Desktop platforms (Linux/macOS/Windows) must be stable first.
 
