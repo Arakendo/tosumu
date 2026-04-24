@@ -427,6 +427,215 @@ impl BTree {
 
         Ok(Some((promote_key, new_pgno)))
     }
+
+    // ── Invariant checker ────────────────────────────────────────────────────
+
+    /// Verify structural invariants of the B+ tree.
+    ///
+    /// Checks performed (insert-only build; half-occupancy deferred until
+    /// delete/merge rebalancing exists):
+    /// - Root is non-zero and has a valid page type
+    /// - Every visited page is PAGE_TYPE_LEAF or PAGE_TYPE_INTERNAL
+    /// - Every slot has in-bounds offset and length
+    /// - Separator keys within each internal node are distinct
+    /// - Separator routing: each child subtree's min/max live key respects its enclosing separators
+    /// - All leaves are at the same depth from the root
+    /// - Live keys within each leaf are sorted (LWW-deduplicated)
+    /// - Leaf chain is ordered: first live key of leaf N+1 > last live key of leaf N
+    /// - No duplicate live keys across the entire tree
+    pub fn check_invariants(&self) -> Result<()> {
+        let root = self.pager.root_page();
+        if root == 0 {
+            return Err(TosumError::Corrupt { pgno: 0, reason: "root_page is 0" });
+        }
+        let root_type = self.pager.with_page(root, |p| Ok(p[HDR_PAGE_TYPE]))?;
+        if root_type != PAGE_TYPE_LEAF && root_type != PAGE_TYPE_INTERNAL {
+            return Err(TosumError::Corrupt { pgno: root, reason: "root has unexpected page type" });
+        }
+        self.inv_check_subtree(root)?;
+        self.inv_check_leaf_chain(root)?;
+        Ok(())
+    }
+
+    /// DFS invariant check on the subtree rooted at `pgno`.
+    ///
+    /// Returns `(min_live_key, max_live_key, depth)` where min/max are `None`
+    /// when the subtree contains no live keys, and depth is 1 at a leaf.
+    fn inv_check_subtree(
+        &self,
+        pgno: u64,
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, usize)> {
+        let page_type = self.pager.with_page(pgno, |p| Ok(p[HDR_PAGE_TYPE]))?;
+        match page_type {
+            PAGE_TYPE_LEAF => {
+                let live_keys = self.pager.with_page(pgno, |page| {
+                    inv_check_slots(page, pgno)?;
+                    let keys: Vec<Vec<u8>> = leaf_read_all_live(page)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
+                    Ok(keys)
+                })?;
+                // leaf_read_all_live uses BTreeMap so keys emerge sorted.
+                // Verify explicitly for the invariant record.
+                for i in 1..live_keys.len() {
+                    if live_keys[i] <= live_keys[i - 1] {
+                        return Err(TosumError::Corrupt {
+                            pgno,
+                            reason: "leaf live keys are not strictly sorted",
+                        });
+                    }
+                }
+                Ok((live_keys.first().cloned(), live_keys.last().cloned(), 1))
+            }
+            PAGE_TYPE_INTERNAL => {
+                let (mut entries, leftmost) = self.pager.with_page(pgno, |page| {
+                    inv_check_slots(page, pgno)?;
+                    Ok(internal_read_all(page))
+                })?;
+                if leftmost == 0 {
+                    return Err(TosumError::Corrupt {
+                        pgno,
+                        reason: "internal page has zero leftmost child",
+                    });
+                }
+                // Sort by separator so routing checks are deterministic regardless of slot order.
+                entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+                // Separators must be distinct.
+                for i in 1..entries.len() {
+                    if entries[i].0 == entries[i - 1].0 {
+                        return Err(TosumError::Corrupt {
+                            pgno,
+                            reason: "internal page contains duplicate separator keys",
+                        });
+                    }
+                }
+                // All right-child pgnos must be non-zero.
+                for (_, child) in &entries {
+                    if *child == 0 {
+                        return Err(TosumError::Corrupt {
+                            pgno,
+                            reason: "internal slot has zero right child",
+                        });
+                    }
+                }
+                // Recurse into leftmost child.
+                let (lc_min, lc_max, depth) = self.inv_check_subtree(leftmost)?;
+                // leftmost child's max must be < first separator.
+                if let (Some(ref max_k), Some(first_sep)) = (&lc_max, entries.first()) {
+                    if max_k.as_slice() >= first_sep.0.as_slice() {
+                        return Err(TosumError::Corrupt {
+                            pgno,
+                            reason: "leftmost child max key >= first separator (routing error)",
+                        });
+                    }
+                }
+                let mut overall_min = lc_min;
+                let mut overall_max = lc_max;
+                // Recurse into right children.
+                for i in 0..entries.len() {
+                    let (sep_key, right_child) = &entries[i];
+                    let (child_min, child_max, child_depth) = self.inv_check_subtree(*right_child)?;
+                    if child_depth != depth {
+                        return Err(TosumError::Corrupt {
+                            pgno,
+                            reason: "children are at different depths (unbalanced tree)",
+                        });
+                    }
+                    // child min must be >= sep_key.
+                    if let Some(ref min_k) = child_min {
+                        if min_k.as_slice() < sep_key.as_slice() {
+                            return Err(TosumError::Corrupt {
+                                pgno,
+                                reason: "right subtree min key < separator (routing error)",
+                            });
+                        }
+                    }
+                    // child max must be < next separator (if one exists).
+                    if let Some(ref max_k) = child_max {
+                        if let Some(next_sep) = entries.get(i + 1) {
+                            if max_k.as_slice() >= next_sep.0.as_slice() {
+                                return Err(TosumError::Corrupt {
+                                    pgno,
+                                    reason: "right subtree max key >= next separator (routing error)",
+                                });
+                            }
+                        }
+                    }
+                    if let Some(ref k) = child_min {
+                        match overall_min {
+                            None => overall_min = Some(k.clone()),
+                            Some(ref cur) if k < cur => overall_min = Some(k.clone()),
+                            _ => {}
+                        }
+                    }
+                    if let Some(ref k) = child_max {
+                        match overall_max {
+                            None => overall_max = Some(k.clone()),
+                            Some(ref cur) if k > cur => overall_max = Some(k.clone()),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok((overall_min, overall_max, 1 + depth))
+            }
+            _ => Err(TosumError::Corrupt {
+                pgno,
+                reason: "unexpected page type in tree traversal",
+            }),
+        }
+    }
+
+    /// Walk the leaf chain, checking:
+    /// - All pages in the chain are PAGE_TYPE_LEAF
+    /// - first live key of each leaf > last live key of its predecessor
+    /// - No live key appears in more than one leaf
+    fn inv_check_leaf_chain(&self, root: u64) -> Result<()> {
+        // Descend to the leftmost leaf.
+        let mut pgno = root;
+        loop {
+            let page_type = self.pager.with_page(pgno, |p| Ok(p[HDR_PAGE_TYPE]))?;
+            if page_type == PAGE_TYPE_LEAF { break; }
+            pgno = self.pager.with_page(pgno, |p| Ok(read_u64(p, HDR_LEFTMOST)))?;
+        }
+        let mut seen: std::collections::HashSet<Vec<u8>> = Default::default();
+        let mut prev_max: Option<Vec<u8>> = None;
+        loop {
+            let (live_keys, next) = self.pager.with_page(pgno, |page| {
+                if page[HDR_PAGE_TYPE] != PAGE_TYPE_LEAF {
+                    return Err(TosumError::Corrupt {
+                        pgno,
+                        reason: "non-leaf page encountered in leaf chain",
+                    });
+                }
+                let keys: Vec<Vec<u8>> = leaf_read_all_live(page)
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                Ok((keys, read_u64(page, HDR_LEFTMOST)))
+            })?;
+            if let (Some(ref prev), Some(first)) = (&prev_max, live_keys.first()) {
+                if first <= prev {
+                    return Err(TosumError::Corrupt {
+                        pgno,
+                        reason: "leaf chain out of order: first key <= previous leaf max key",
+                    });
+                }
+            }
+            for k in &live_keys {
+                if !seen.insert(k.clone()) {
+                    return Err(TosumError::Corrupt {
+                        pgno,
+                        reason: "duplicate live key found in leaf chain",
+                    });
+                }
+            }
+            prev_max = live_keys.last().cloned();
+            if next == 0 { break; }
+            pgno = next;
+        }
+        Ok(())
+    }
 }
 
 // ── Internal page helpers ─────────────────────────────────────────────────────
@@ -608,6 +817,40 @@ fn leaf_free_space(page: &[u8; PAGE_PLAINTEXT_SIZE]) -> usize {
     free_end.saturating_sub(free_start)
 }
 
+// ── Invariant helper ─────────────────────────────────────────────────────────
+
+/// Validate that all slot offset+length pairs in `page` are in-bounds.
+fn inv_check_slots(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64) -> Result<()> {
+    let slot_count  = read_u16(page, HDR_SLOT_COUNT) as usize;
+    let free_start  = read_u16(page, HDR_FREE_START) as usize;
+    let free_end    = read_u16(page, HDR_FREE_END)   as usize;
+    let slot_array_end = PAGE_HEADER_SIZE + slot_count * SLOT_SIZE;
+    if slot_array_end > free_start {
+        return Err(TosumError::Corrupt { pgno, reason: "slot array end exceeds free_start" });
+    }
+    if free_start > free_end {
+        return Err(TosumError::Corrupt { pgno, reason: "free_start > free_end" });
+    }
+    if free_end > PAGE_PLAINTEXT_SIZE {
+        return Err(TosumError::Corrupt { pgno, reason: "free_end > PAGE_PLAINTEXT_SIZE" });
+    }
+    for i in 0..slot_count {
+        let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
+        let off = read_u16(page, slot_pos) as usize;
+        let len = read_u16(page, slot_pos + 2) as usize;
+        if len == 0 {
+            return Err(TosumError::Corrupt { pgno, reason: "slot has zero length" });
+        }
+        if off < free_end {
+            return Err(TosumError::Corrupt { pgno, reason: "slot offset below free_end (overlaps free area)" });
+        }
+        if off + len > PAGE_PLAINTEXT_SIZE {
+            return Err(TosumError::Corrupt { pgno, reason: "slot offset+length exceeds page boundary" });
+        }
+    }
+    Ok(())
+}
+
 // ── Record encoding ───────────────────────────────────────────────────────────
 
 fn encode_live(key: &[u8], value: &[u8]) -> Vec<u8> {
@@ -784,5 +1027,96 @@ mod tests {
             h += 1;
         }
         Ok(h)
+    }
+
+    // ── check_invariants tests ────────────────────────────────────────────────
+
+    #[test]
+    fn invariants_empty_tree() {
+        let p = tmp("inv_empty");
+        let _ = std::fs::remove_file(&p);
+        let t = BTree::create(&p).unwrap();
+        t.check_invariants().unwrap();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invariants_small_tree() {
+        let p = tmp("inv_small");
+        let _ = std::fs::remove_file(&p);
+        let mut t = BTree::create(&p).unwrap();
+        for k in &[b"alpha" as &[u8], b"beta", b"gamma", b"delta", b"epsilon"] {
+            t.put(k, b"v").unwrap();
+        }
+        t.check_invariants().unwrap();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invariants_after_many_inserts_with_splits() {
+        let p = tmp("inv_splits");
+        let _ = std::fs::remove_file(&p);
+        let mut t = BTree::create(&p).unwrap();
+        for i in 0u32..500 {
+            let k = format!("key{i:05}");
+            let v = format!("val{i:05}");
+            t.put(k.as_bytes(), v.as_bytes()).unwrap();
+        }
+        t.check_invariants().unwrap();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invariants_after_reverse_order_inserts() {
+        // Reverse insertion stresses the separator routing differently than forward order.
+        let p = tmp("inv_reverse");
+        let _ = std::fs::remove_file(&p);
+        let mut t = BTree::create(&p).unwrap();
+        for i in (0u32..300).rev() {
+            let k = format!("{i:08}");
+            t.put(k.as_bytes(), b"v").unwrap();
+        }
+        t.check_invariants().unwrap();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invariants_after_delete() {
+        let p = tmp("inv_delete");
+        let _ = std::fs::remove_file(&p);
+        let mut t = BTree::create(&p).unwrap();
+        for i in 0u32..50 {
+            let k = format!("k{i:03}");
+            t.put(k.as_bytes(), b"v").unwrap();
+        }
+        // Delete every third key.
+        for i in (0u32..50).step_by(3) {
+            let k = format!("k{i:03}");
+            t.delete(k.as_bytes()).unwrap();
+        }
+        t.check_invariants().unwrap();
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn invariants_scan_matches_model() {
+        // Verify that scan_physical() result matches an in-memory BTreeMap reference.
+        let p = tmp("inv_model");
+        let _ = std::fs::remove_file(&p);
+        let mut model: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = Default::default();
+        let mut t = BTree::create(&p).unwrap();
+        for i in 0u32..200 {
+            // Mix forward and reverse to exercise both split directions.
+            let idx = if i % 2 == 0 { i } else { 400 - i };
+            let k = format!("key{idx:05}").into_bytes();
+            let v = format!("val{idx:05}").into_bytes();
+            model.insert(k.clone(), v.clone());
+            t.put(&k, &v).unwrap();
+        }
+        t.check_invariants().unwrap();
+        let expected: Vec<_> = model.into_iter().collect();
+        let actual = t.scan_physical().unwrap();
+        assert_eq!(actual, expected, "scan_physical must match BTreeMap model");
+        let _ = std::fs::remove_file(&p);
     }
 }

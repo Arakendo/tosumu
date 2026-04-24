@@ -242,6 +242,7 @@ fn cmd_hex(path: &std::path::Path, pgno: u64) -> tosumu_core::error::Result<()> 
 
 fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Result<()> {
     use tosumu_core::inspect::verify_file;
+    use tosumu_core::btree::BTree;
 
     let report = verify_file(path)?;
     println!("verifying {} ({} data pages) ...", path.display(), report.pages_checked);
@@ -272,6 +273,24 @@ fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Resu
     }
 
     if report.issues.is_empty() {
+        // Page integrity passed — also check B-tree structural invariants.
+        match BTree::open(path) {
+            Ok(tree) => match tree.check_invariants() {
+                Ok(()) => {
+                    if explain {
+                        println!("  btree:       OK     — keys sorted, routing correct, leaf chain ordered");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  btree:       FAIL   — {e}");
+                    eprintln!("FAILED: btree structural invariant violated");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("  btree:       SKIP   — could not open as BTree: {e}");
+            }
+        }
         println!("all pages ok: {}/{}", report.pages_ok, report.pages_checked);
     } else {
         if !explain {
