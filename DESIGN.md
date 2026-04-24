@@ -202,7 +202,7 @@ Policy:
 - A page is **eligible for compaction** when `fragmented_bytes >= page_body_size / 4`.
 - Compaction is triggered **lazily on write**: before an insert/update that would otherwise fail with `OutOfSpace`, the pager tries compacting the target page first. No background sweeper.
 - Compaction is a full heap rewrite: copy live records to a scratch buffer in slot order, reset `free_end`, rewrite slots, zero `fragmented_bytes`.
-- Stage 1 may **skip `fragmented_bytes` entirely** and recompute live/dead bytes on demand during compaction. Tracking it in the header is a Stage 2+ optimization, not a Stage 1 requirement. (See §12.1.)
+- Stage 1 may **skip `fragmented_bytes` entirely** and recompute live/dead bytes on demand during compaction. Tracking it in the header is a Stage 2+ optimization, not a Stage 1 requirement. (See §12.2.)
 
 #### 5.4.2 Value size cap (Stage 1)
 
@@ -899,18 +899,208 @@ This is acceptable for a learning project. Document it so we don't quietly assum
 
 ## 12. Roadmap (stages)
 
-Each stage ends with a tagged release and a short write-up.
+The roadmap is expressed two ways: **MVP increments** (smallest shippable deltas, §12.0) and **stages** (broader phases, §12.1+). Use the MVP framing to decide what to build next; use the stage framing to plan releases.
+
+### 12.0 MVP increments
+
+Each MVP is the smallest possible thing that proves **one new capability works end-to-end**. Every increment ships a runnable binary with tests. No MVP is "internal-only" — if nobody can use it, it doesn't count.
+
+**Rule:** No MVP builds on an unproven foundation. If MVP+N is flaky, fix it before starting MVP+(N+1).
+
+#### MVP 0 — "It stores bytes" *(one afternoon)*
+
+The absolute minimum. Proves the I/O path works, the data round-trips, and the project actually compiles into something useful.
+
+- Single-file store using a flat append-only log (no pages, no format, no nothing).
+- In-memory `HashMap<Vec<u8>, Vec<u8>>` rebuilt on open by replaying the log.
+- CLI: `tosumu put <path> <k> <v>`, `tosumu get <path> <k>`, `tosumu scan <path>`.
+- No durability guarantees beyond `fsync` on close. No crash safety.
+- Tests: put/get round-trip, reopen returns same data, empty file opens cleanly.
+
+**Proves:** the project exists. Binary runs. Data survives a clean close.
+**Demo:** `tosumu put db.log hello world && tosumu get db.log hello` prints `world`.
+**Explicitly not there:** no page format, no B+ tree, no encryption, no crash safety.
+
+#### MVP +1 — "It has a real format" *(Stage 1 storage)*
+
+Replace the append-only log with the real on-disk format from §5: file header, 4 KB pages, slotted layout, freelist.
+
+- File header with magic `TOSUMUv0`, `format_version`, `min_reader_version`.
+- Slotted leaf pages (§5.4). Linear scan across all leaf pages for `get`/`scan`.
+- Freelist for page reuse after delete.
+- CLI: `init`, `put`, `get`, `scan`, `stat`, `delete`.
+- Property tests for page encode/decode round-trip.
+
+**Proves:** on-disk format works. Pages are a real concept. Reopen is deterministic.
+**Demo:** `tosumu init db.tsm && tosumu put db.tsm k v && tosumu stat db.tsm` shows 1 record, 1 page.
+**Explicitly not there:** no B+ tree (linear scan only), no WAL, no encryption.
+
+#### MVP +2 — "It's inspectable" *(Stage 1 debug trio)*
+
+The debug tooling from §12.3. Without it, debugging MVP+3 onward is guesswork.
+
+- `tosumu dump <path> [--page N]` — pretty-print header and page contents.
+- `tosumu hex <path> --page N` — raw hex+ASCII dump with annotations.
+- `tosumu verify <path>` — walk every page, report anomalies, exit non-zero on any.
+- Fuzz target: `fuzz_page_decode` — arbitrary 4 KB blobs must not panic.
+
+**Proves:** "no silent corruption" principle (§2.4) works end-to-end.
+**Demo:** Hand-edit a byte in a page with a hex editor → `tosumu verify` reports it.
+**Explicitly not there:** no interactive viewer (that's MVP+7).
+
+#### MVP +3 — "It scales past linear scan" *(Stage 2 B+ tree)*
+
+Replace linear scan with a B+ tree index. Enables range scans in sorted order.
+
+- Internal pages, splits, lazy deletes (merge in MVP+6 if needed).
+- Overflow pages for large values (records exceeding §5.4.2 cap).
+- `scan_by_key()` returns keys in sorted order; `scan_physical()` stays for debugging.
+- Property tests: tree height O(log n), sorted iteration, invariants after random insert/delete.
+- Fuzz target: `fuzz_btree_operations`.
+
+**Proves:** the engine behaves like a real database for lookups.
+**Demo:** Insert 10K random keys, range scan `[k500..k600]` returns 100 sorted results.
+**Explicitly not there:** no transactions, no crash safety.
+
+#### MVP +4 — "It survives a crash" *(Stage 3 WAL)*
+
+Transactions and Write-Ahead Log. First real durability guarantee.
+
+- `db.transaction(|tx| { ... })` API (§10.1 footgun guardrail).
+- WAL file (`.wal` sidecar) with physical/full-page logging.
+- Recovery on open: replay WAL, roll forward committed transactions.
+- `CrashFs` harness (§11.7) injects crashes at every commit-path site.
+- Fuzz target: `fuzz_wal_replay`.
+- CLI: `tosumu backup <src> <dest>` copies `.tsm` + `.wal` atomically (§10.6 footgun).
+
+**Proves:** durability. Power loss during commit leaves DB consistent.
+**Demo:** Run `CrashFs` test — inject crash at 20 sites, every recovery is consistent.
+**Explicitly not there:** no encryption, no multi-reader concurrency.
+
+#### MVP +5 — "It's encrypted" *(Stage 4a — single protector)*
+
+One protector (passphrase), full crypto stack working end-to-end. This is the biggest single leap in the plan.
+
+- Page AEAD (ChaCha20-Poly1305, §8.2) with AAD binding (§8.4).
+- DEK generated at init, HKDF-derived `page_key` and `header_mac_key` (§8.3).
+- One keyslot, passphrase protector via Argon2id (§8.6.1).
+- Header MAC covers keyslot region (§8.7).
+- KATs (§11.8) for AEAD, HKDF, DEK-wrap, header MAC.
+- `tosumu verify` extended: check keyslot `kek_kcv` and page AEAD tags.
+- Error model: `WrongKey` vs `AuthFailed { pgno }` are distinct (§10.5 footgun).
+- Fuzz targets: `fuzz_aead_frame`, `fuzz_keyslot_parse`.
+
+**Proves:** encryption works. Wrong passphrase is distinguishable from corruption.
+**Demo:** `tosumu init --encrypt db.tsm` → passphrase prompt → insert data → reopen with wrong passphrase → `WrongKey` error (not panic, not partial plaintext).
+**Explicitly not there:** no recovery key, no key rotation, no TPM.
+
+#### MVP +6 — "Key management works" *(Stage 4b — multiple protectors)*
+
+Multiple protectors, recovery key, cheap KEK rotation.
+
+- Up to 8 keyslots. Any one can unlock.
+- **RecoveryKey** protector with one-time Base32 display at init (§10.5 footgun: require confirmation).
+- Optional **Keyfile** protector.
+- CLI: `tosumu protector add|remove|list`.
+- `tosumu rekey-kek` (fast — rewraps DEK only).
+- `tosumu rekey-dek` (slow — rewrites all pages; may slip to MVP+10).
+- Tests: protector-swap attack must fail (§8.7 AAD binding).
+
+**Proves:** real-world key management scenarios work. Lost passphrase doesn't mean lost data.
+**Demo:** Add recovery key, delete passphrase slot, unlock with recovery key.
+**Explicitly not there:** no TPM, no mobile key storage.
+
+#### MVP +7 — "It's interactively inspectable" *(Stage 2–4 TUI viewer)*
+
+Interactive TUI viewer (§12.4). Can slot in any time after MVP+2, but most valuable after MVP+5 when encrypted DB inspection becomes interesting.
+
+- `tosumu view <path>` — ratatui + crossterm TUI.
+- Views: file header, page list, page detail, B+ tree structure, WAL records, verification.
+- Encrypted DB views (after MVP+5): protector summary, keyslot detail, per-page auth status.
+- Keyboard navigation, colorized output, watch mode, read-only.
+
+**Proves:** the "storage engine autopsy table" aesthetic (§12.4).
+**Demo:** `tosumu view db.tsm` → navigate pages → see B+ tree visually → spot corrupt page highlighted red.
+**Explicitly not there:** no write operations, no query builder, no remote connections.
+
+#### MVP +8 — "It speaks SQL (toy)" *(Stage 5 query layer)*
+
+Minimal query layer. Proves the engine supports relational-style workloads.
+
+- Parser for `CREATE TABLE`, `INSERT`, `SELECT ... WHERE key = ?`.
+- System catalog page: `(rootpage, name)` entries per table.
+- Single-column primary key. No joins, no planner, no optimizer.
+- CLI: `tosumu sql <path> "SELECT * FROM users WHERE id = 42"`.
+
+**Proves:** the storage engine is a real foundation for query languages.
+**Demo:** `CREATE TABLE users (id, name); INSERT INTO users VALUES (1, 'alice'); SELECT * FROM users WHERE id = 1`.
+**Explicitly not there:** no joins, no GROUP BY, no aggregates, no transactions over SQL (use library API).
+
+#### MVP +9 — "Multiple readers" *(Stage 6 — MVCC snapshots)*
+
+Multi-reader concurrency without blocking writes.
+
+- MVCC snapshot by LSN (read transactions see a fixed point-in-time view).
+- Single writer, multiple concurrent readers.
+- Secondary indexes (additional B+ trees mapping `(secondary_key, primary_key)`).
+- `VACUUM` command — reclaim space from deleted records.
+- Benchmarks vs SQLite on toy workloads (§11.11).
+
+**Proves:** real concurrency works. Read-heavy workloads don't block writers.
+**Demo:** 10 reader threads scanning while 1 writer inserts — no contention, no stale errors.
+**Explicitly not there:** no multi-writer, no distributed concurrency.
+
+#### MVP +10 — "It runs on mobile" *(Stage 7 — iOS/Android)*
+
+Per §19, mobile support with hardware-backed key storage.
+
+- **MVP +10a:** C FFI layer (`tosumu-ffi`) with Swift/Kotlin bindings.
+- **MVP +10b:** iOS wrapper with `IosKeychainProtector` (Secure Enclave).
+- **MVP +10c:** Android wrapper with `AndroidKeystoreProtector` (Keystore API).
+
+**Proves:** the engine is portable to constrained platforms with hardware crypto.
+**Demo:** iOS demo app reads/writes encrypted tosumu DB with biometric unlock.
+**Explicitly not there:** no iCloud sync, no cross-device replication, no web assembly target.
+
+#### MVP increment summary table
+
+| MVP | Ships | Proves | Maps to stage |
+|-----|-------|--------|---------------|
+| 0 | Append-only log, in-memory index | I/O works, binary runs | pre-Stage 1 |
+| +1 | Slotted pages, file header, freelist | On-disk format works | Stage 1 storage |
+| +2 | `dump` / `hex` / `verify`, fuzz page decode | No silent corruption | Stage 1 debug |
+| +3 | B+ tree, range scans, overflow pages | Real DB lookups | Stage 2 |
+| +4 | Transactions, WAL, `CrashFs` | Durability | Stage 3 |
+| +5 | Passphrase-encrypted DB, KATs | Crypto works end-to-end | Stage 4a |
+| +6 | Multiple protectors, recovery key, KEK rotation | Key management works | Stage 4b |
+| +7 | TUI viewer (`tosumu view`) | Interactive inspection | Stage 2–4 crosscut |
+| +8 | Toy SQL (`CREATE TABLE`, `SELECT`) | Real query foundation | Stage 5 |
+| +9 | MVCC readers, secondary indexes, `VACUUM` | Concurrency | Stage 6 |
+| +10 | iOS/Android FFI, Keychain/Keystore | Mobile portability | Stage 7 |
+
+**How to use this table:**
+
+- Pick the next MVP you haven't finished. Don't skip.
+- If an MVP slips, split it further (e.g., MVP+4a = WAL write, MVP+4b = WAL replay, MVP+4c = `CrashFs`).
+- Each MVP gets a Git tag: `v0.0.mvp0`, `v0.1.mvp1`, etc. A release note describes what the MVP proved.
+- A stage (§12.1+) is done when its constituent MVPs are done.
+
+---
+
+### 12.1 Stage-based roadmap
+
+Stages are the broader framing: each stage ends with a tagged release and a short write-up.
 
 ### Stage 1 — Storage only *(finishable in a weekend)*
 - File header, page allocation, freelist.
 - Slotted page leaf layout.
 - Single implicit "table."
-- CLI: `init`, `put <k> <v>`, `get <k>`, `scan`, `stat`, plus the debug trio in §12.2.
+- CLI: `init`, `put <k> <v>`, `get <k>`, `scan`, `stat`, plus the debug trio in §12.3.
 - **No encryption, no WAL, no B+ tree yet.** Linear scan across leaf pages.
 - Property tests for page + record codec.
 - **Reference:** See `REFERENCES.md` for LruCache (page cache eviction pattern) and RingBuffer (optional WAL buffering).
 
-#### 12.1 Stage 1 simplifications (explicit)
+#### 12.2 Stage 1 simplifications (explicit)
 
 To keep Stage 1 actually finishable, the following are **deliberately not built** and must not be smuggled in:
 
@@ -920,7 +1110,7 @@ To keep Stage 1 actually finishable, the following are **deliberately not built*
 - No varint debate: **LEB128**, unsigned, for both `key_len` and `value_len`. Decision closed.
 - No background anything. All work happens on the calling thread.
 
-#### 12.2 Stage 1 debug tooling (ships with Stage 1, not later)
+#### 12.3 Stage 1 debug tooling (ships with Stage 1, not later)
 
 Debugging a storage engine without visibility is a recipe for learned helplessness. These CLI subcommands are part of Stage 1's definition of done:
 
@@ -928,9 +1118,9 @@ Debugging a storage engine without visibility is a recipe for learned helplessne
 - `tosumu hex <path> --page N` — raw hex+ASCII dump of one page, 16 bytes per line, with header-field annotations for page 0.
 - `tosumu verify <path>` — walk every page, check page-type consistency, slot bounds (`offset + length <= page_body_size`), freelist reachability, and (Stage 4+) AEAD tag + header MAC. Report every anomaly, exit non-zero on any.
 
-#### 12.3 Viewer evolution (Stage 2+, optional but recommended)
+#### 12.4 Viewer evolution (Stage 2+, optional but recommended)
 
-The CLI inspection tools in §12.2 are the foundation. Once they work, an **interactive viewer** becomes a force multiplier for debugging, learning, and demonstrating tosumu. This section documents the staged viewer evolution so we don't accidentally build "Datagrip Junior" before the database works.
+The CLI inspection tools in §12.3 are the foundation. Once they work, an **interactive viewer** becomes a force multiplier for debugging, learning, and demonstrating tosumu. This section documents the staged viewer evolution so we don't accidentally build "Datagrip Junior" before the database works.
 
 **Stage 2–3: TUI viewer (terminal UI)**
 
@@ -1237,7 +1427,7 @@ tosumu migrate --dry-run <path>    # print MigrationPlan, touch nothing
 tosumu migrate --no-backup <path>  # skip the .bak; refuses on destructive categories
 tosumu inspect <path>              # format_version, min_reader_version, protectors
 tosumu backup <path>                # explicit snapshot via copy-and-fsync
-tosumu verify <path>                # already defined §12.2; also checks version fields
+tosumu verify <path>                # already defined §12.3; also checks version fields
 ```
 
 ### 13.11 What this section does *not* promise
@@ -1291,7 +1481,7 @@ These are tracked here, not silently deferred.
 
 1. **Page size.** 4 KB is the obvious default. Do we want to make it configurable at `init` time for experimentation (e.g. 8 KB, 16 KB)? *Tentative: yes, settable at init, immutable after.*
 2. **Endianness on disk.** Little-endian hardcoded. Any reason to revisit? *Tentative: no.*
-3. ~~**Varint flavor.**~~ **Closed.** LEB128, unsigned. See §12.1.
+3. ~~**Varint flavor.**~~ **Closed.** LEB128, unsigned. See §12.2.
 4. **Checksum vs MAC for unencrypted mode.** If a user opts out of encryption, do we still CRC pages? *Tentative: yes, CRC32C in the page header.*
 5. **WAL in separate file vs embedded.** Starting with a separate `tosumu.wal` file. Embedded WAL (SQLite-style) is possible later but adds complexity.
 6. **Free page zeroing.** Do we zero freed pages on disk? *Tentative: yes when encrypted (cheap), optional when not.*
