@@ -1194,6 +1194,20 @@ Per §19, mobile support with hardware-backed key storage.
 **Demo:** iOS demo app reads/writes encrypted tosumu DB with biometric unlock.
 **Explicitly not there:** no iCloud sync, no cross-device replication, no web assembly target.
 
+#### MVP +11 — "It runs in a cluster" *(Stage 8+ — witness/observer on K3s)*
+
+Deploy the three-server witness model (§23.4) and local observer model (§23.6) as containerised workloads on a lightweight Kubernetes cluster. K3s is the reference target: single-binary, runs on resource-constrained hardware, close enough to production Kubernetes to be meaningful.
+
+- `tosumu-server` as a Deployment with a PersistentVolumeClaim for the DB file.
+- `tosumu-witness` as a StatefulSet across three nodes; each witness stores signed receipts in its own PVC.
+- `tosumu-observer` as a sidecar container in the `tosumu-server` Pod communicating over a shared Unix socket (emptyDir volume mount).
+- Health status surfaced via Kubernetes readiness and liveness probes: `Healthy` → probe passes; `RollbackSuspected` / `AuditChainBroken` → readiness probe fails, pod taken out of rotation.
+- Helm chart or kustomize overlay for the full topology.
+
+**Proves:** the audit and witness layers work in a real multi-node deployment. Rollback detection triggers correctly when a stale PVC snapshot is swapped in.
+**Demo:** Take a volume snapshot of the DB PVC at LSN 800. Let it advance to LSN 950. Restore the snapshot. `tosumu-cli status` reports `RollbackSuspected`; witnesses confirm the disagreement; server refuses writes.
+**Explicitly not there:** no automatic failover, no multi-writer consensus, no Raft. Witnesses are auditors, not replicas.
+
 #### MVP increment summary table
 
 | MVP | Ships | Proves | Maps to stage |
@@ -1209,6 +1223,7 @@ Per §19, mobile support with hardware-backed key storage.
 | +8 | Toy SQL (`CREATE TABLE`, `SELECT`) | Real query foundation | Stage 5 |
 | +9 | MVCC readers, secondary indexes, `VACUUM` | Concurrency | Stage 6 |
 | +10 | iOS/Android FFI, Keychain/Keystore | Mobile portability | Stage 7 |
+| +11 | K3s cluster: server + witnesses + observer sidecar | Audit/witness in real deployment | Stage 8 |
 
 **How to use this table:**
 
@@ -3389,6 +3404,19 @@ tosumu-observer   local IPC health observers (single-server model)
 ```
 
 Dependency rules mirror the existing layer invariant (§4): `tosumu-core` has no dependency on any of the others. `tosumu-audit` depends on `tosumu-core` (reads LSN and manifest) but not on `tosumu-server`. `tosumu-witness` and `tosumu-observer` depend on `tosumu-audit` for the event chain; neither depends on each other.
+
+### 23.11 Cluster deployment target (K3s)
+
+The reference deployment target for the three-server witness model (§23.4) and observer sidecar model (§23.6) is **K3s** — a single-binary Kubernetes distribution that runs on resource-constrained hardware. K3s is close enough to production Kubernetes that patterns proven there transfer directly, without the overhead of a full cluster for development.
+
+This is deferred to MVP +11 (§12.0). Nothing in §23.1–§23.10 requires K3s to be running. The witness and observer APIs are transport-agnostic; the K3s deployment layer sits entirely above them.
+
+Key K3s deployment decisions that must be made at MVP +11, not before:
+
+- **PVC type for the DB file.** Local-path provisioner is fine for single-node K3s; Longhorn or a cloud block store for multi-node. The DB file must never be on a shared NFS mount (§21).
+- **Observer IPC.** In K3s, `tosumu-observer` runs as a sidecar in the same Pod as `tosumu-server`, communicating via a Unix socket on a shared `emptyDir` volume. This is the correct topology — the observer is local to the process, not across the network.
+- **Witness placement.** Each `tosumu-witness` instance must be scheduled on a separate physical node. Pod anti-affinity rules enforce this. A witness on the same node as the primary is not an independent observer.
+- **Probe mapping.** `HealthStatus::Healthy` maps to readiness probe pass. Any non-`Healthy` / non-`Degraded` status maps to readiness probe fail — the pod is taken out of rotation until an operator resolves the disagreement.
 
 ### 23.10 Design principle
 
