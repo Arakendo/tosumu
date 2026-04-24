@@ -2919,9 +2919,9 @@ On a network filesystem this is more valuable than a plain checksum. A CRC tells
 |----------|-------------|------|
 | Bit flip in transit | detects | detects |
 | Silent partial write (NFS trailing zeros) | detects if zeros change CRC | detects |
-| Stale read from NFS client cache | may not detect (cache has valid CRC) | detects if version counter in AAD differs |
+| Stale read from NFS client cache | may not detect (cache has valid CRC) | detects **only if** writer holds expected `page_version` and checks it after re-read (old complete frame still verifies) |
 | Page swap between databases (same app, different files) | misses (bytes are valid) | detects (DEK is different) |
-| Page rollback (old valid page reinserted) | misses (bytes are valid) | detects if `page_version` in AAD is checked |
+| Page rollback (old valid page reinserted) | misses (bytes are valid) | detects **only if** checked against a trusted version anchor (LSN, checkpoint manifest); old frame with old tag still verifies |
 | External write that happens to produce valid CRC | misses | detects (no valid AEAD tag without DEK) |
 
 **Concrete uses in network mode:**
@@ -2942,17 +2942,41 @@ On a network filesystem this is more valuable than a plain checksum. A CRC tells
    ```
    A close-time AEAD failure that didn't show up during the session indicates the filesystem swapped or corrupted a page after the write — not impossible on NFS with aggressive attribute caching.
 
-5. **Page version in AAD as a rollback detector.**  
-   Because `page_version` is in the AAD, an old valid ciphertext for page N cannot be substituted for a newer one without AEAD failure. On a network filesystem where a stale cached page might be served instead of the current one, the version increment in the AAD makes this detectable. This is a property tosumu gets for free from the existing design — it only needs to be enforced in network mode by treating any AEAD failure as a hard error rather than a soft warning.
+5. **Page version in AAD: conditional rollback detection.**  
+   `page_version` is in the AAD, so an old ciphertext for page N *at version M* cannot be presented as page N *at version M+1* — that would be a different AAD and the tag would fail. But an old *complete* page frame (old nonce + old `page_version` + old ciphertext + old tag) still decrypts and verifies correctly. AEAD proves *authorship at the claimed version*; it does not prove *freshness* unless the reader holds an independent trusted expectation of what the current version must be.
+
+   Verify-after-write (item 1) is the safe case: the writer just wrote version N and immediately re-reads, requiring `decrypted.page_version == N`. That works because the writer holds the expected version as in-process state.
+
+   On a subsequent open, without a checkpoint-signed manifest, global LSN, or Merkle root anchoring which version each page should be at, an old valid frame is indistinguishable from a current one. This is consistent with the known limitation already noted in §8.10: per-page `page_version` does not prevent coordinated multi-page rollback without a global anchor.
 
 **What AEAD does not catch:**
 
-- **Dropped writes.** If the filesystem silently discards a write (page N was never persisted), the pre-existing page N still has a valid AEAD tag. Verify-after-write catches this: if you write page N and immediately re-read it and the tag fails, the write didn't take. If the tag succeeds but the version is wrong — the old page was served — the AAD version check catches it.
+- **Dropped writes.** If the filesystem silently discards a write (page N was never persisted), the pre-existing page N still has a valid AEAD tag — AEAD alone cannot detect this. Verify-after-write catches it: write page N at version M, immediately re-read, require `decrypted.page_version == M`. A stale old page (version M−1) has a valid tag but the version check fails. This works because the writer holds M as in-process state; it is not derived from the on-disk page itself.
 - **WAL frame corruption.** WAL frames are also AEAD-encrypted (§7.2: `PageWrite` records store `ciphertext_blob`). A corrupt WAL frame fails AEAD during recovery. This is already in the design; network mode just means corruption is more likely.
 
-**The practical upshot:**  
+**What AEAD proves vs. what it doesn't:**
 
-Tosumu's per-page AEAD means network mode doesn't need a separate integrity layer. The encryption *is* the integrity check. The cost is one extra `decrypt_page()` call per written page in verify-after-write mode — roughly one AES/ChaCha block operation per 4096 bytes. That is cheap relative to a network round-trip and extremely cheap relative to data corruption.
+```
+AEAD proves:   this page was written by someone holding the DEK,
+               for this pgno / page_version / page_type.
+
+AEAD does not prove: this is the newest version of the page.
+
+Freshness (rollback/staleness detection) requires a trusted external anchor:
+  - expected page_version held by the writer (verify-after-write: safe)
+  - checkpoint-signed page manifest
+  - global LSN bound to a trusted checkpoint record
+  - Merkle root over the page set
+
+Without one of those anchors, an old but authentic page frame is
+indistinguishable from a current one.
+```
+
+This is not a weakness unique to Tosumu. It is the standard AEAD bound: authentication proves origin and integrity, not recency. It is already acknowledged in §8.10 (known limitations: no global rollback protection without a signed manifest).
+
+**The practical upshot:**
+
+Tosumu's per-page AEAD means network mode doesn't need a *separate* integrity layer for corruption and tampering. The encryption is the integrity check for those threats. Freshness/rollback detection requires a trusted version anchor — in verify-after-write mode, the writer's in-process expected version serves that role. The cost is one extra `decrypt_page()` call per written page — roughly one ChaCha block operation per 4096 bytes. Cheap relative to a network round-trip and extremely cheap relative to data corruption.
 
 ---
 
