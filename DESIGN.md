@@ -484,9 +484,10 @@ Properties this buys us (all deliberately):
 ### 8.3 Keys
 
 - **DEK** (`[u8; 32]`): generated from `OsRng` at `init`. Never leaves memory in plaintext. Persisted only as wrapped blobs in keyslots.
-- From the DEK, derive two subkeys via HKDF-SHA256 with fixed info strings:
-  - `page_key`   = `HKDF(DEK, info = "tosumu/v1/page")`
-  - `header_mac_key` = `HKDF(DEK, info = "tosumu/v1/header-mac")`
+- From the DEK, derive three subkeys via HKDF-SHA256 with fixed info strings:
+  - `page_key`        = `HKDF(DEK, info = "tosumu/v1/page")`
+  - `header_mac_key`  = `HKDF(DEK, info = "tosumu/v1/header-mac")`
+  - `audit_key`       = `HKDF(DEK, info = "tosumu/v1/audit")`
 - Each **protector** produces a 32-byte **KEK** used to AEAD-wrap the DEK into a keyslot.
 - All in-memory keys live in `Zeroizing<[u8; 32]>`. Dropped keys are wiped.
 
@@ -3218,7 +3219,19 @@ Events are append-only. There is no delete.
 
 ### 23.3 Hash-chained event structure
 
-Each event record:
+Because every database is always encrypted (§8.1), the audit log is also AEAD-protected. Each event record is encrypted with `audit_key` (derived from the DEK via `HKDF(DEK, info = "tosumu/v1/audit")`, §8.3) before being appended. The hash chain runs over the **ciphertexts**, not the plaintexts: a verifier without the DEK can still check chain integrity; a verifier with the DEK can additionally decrypt and inspect event content.
+
+Each event record on disk:
+
+```
+nonce             [u8; 12]  random, per-event
+event_ciphertext  [u8; N]   AEAD ciphertext of the plaintext fields below
+authtag           [u8; 16]  ChaCha20-Poly1305 tag
+previous_hash     [u8; 32]  hash of previous on-disk event record (covers nonce+ciphertext+tag)
+event_hash        [u8; 32]  H(nonce ++ event_ciphertext ++ authtag ++ previous_hash)
+```
+
+Plaintext fields (inside the ciphertext):
 
 ```
 event_id          u64      monotonic, per-database
@@ -3228,23 +3241,21 @@ session_id        u64      from §7.7 connection_info
 process_id        u32
 host_id           [u8; 8]  first 8 bytes of hostname hash
 lsn               u64      database LSN at time of event
-previous_hash     [u8; 32] hash of previous event record
-event_hash        [u8; 32] H(all fields above including previous_hash)
 ```
 
 Chain integrity:
 
 ```
-event[n].event_hash = H(event[n].fields ++ event[n-1].event_hash)
+event[n].event_hash = H(event[n].nonce ++ event[n].ciphertext ++ event[n].tag ++ event[n-1].event_hash)
 ```
 
 The genesis event (event 0) sets `previous_hash` to all zeros.
 
-If any event is deleted, reordered, or modified, every subsequent `event_hash` value is invalidated. Verification is O(n) in the number of events.
+If any event is deleted, reordered, or modified — even a single ciphertext byte — every subsequent `event_hash` value is invalidated. Verification is O(n) in the number of events.
 
 **What the chain proves and does not prove:**
 
-The chain proves the sequence is internally consistent and unmodified since it was written. It does not prove that the events it describes are true — a compromised process could write a valid chain of false events. The chain's value comes from comparing it against independent external observations (§23.4, §23.6).
+The chain proves the sequence of ciphertexts is internally consistent and unmodified since it was written. AEAD additionally proves each event was written by a process holding the DEK. A witness without the DEK can verify chain integrity; an auditor with the DEK can verify both chain integrity and event authenticity. Neither can be fooled without leaving evidence.
 
 ### 23.4 Three-server witness model
 
@@ -3545,5 +3556,87 @@ None of these are niche in isolation. The combination narrows the field.
 ### 24.5 The honest two-sentence version
 
 Tosumu is not a better SQLite. It is a stricter, more paranoid, more explainable storage engine for workloads where "trust but verify" is the minimum acceptable bar — not an afterthought bolted on later.
+
+---
+
+## 25. Ransomware threat model and defenses
+
+Ransomware is a specific adversary: a process running as the same OS user as the database that encrypts files it can reach and demands a key for restoration. It is distinct from the §8.1 threat model (attacker with file-level read/write access trying to be subtle). Ransomware is not subtle — it overwrites files wholesale.
+
+This section documents what Tosumu provides by design, what it does not provide, and what the operator must supply at the deployment layer.
+
+### 25.1 What the always-encrypted design provides for free
+
+Because every page is AEAD-authenticated, ransomware encryption is **immediately detectable** on next open. Ransomware doesn't understand Tosumu's page format; it overwrites file bytes with its own ciphertext. The result: every page AEAD tag fails. `AuthFailureDetected` fires on the first page read. The database refuses to open.
+
+This is a meaningful property:
+
+- There is no "silently corrupted but apparently working" state after a ransomware attack. The database is either intact and opens correctly, or it fails loudly on the first page authentication.
+- The exact failure (`AuthFailed { pgno: 1 }` on the first data page) tells the operator immediately what happened, without needing to reason about whether the data is trustworthy.
+- The audit chain (§23.3), if the audit log survived on a separate path, preserves the last authenticated state before the attack.
+
+This does **not** prevent the attack. It provides immediate, unambiguous detection.
+
+### 25.2 What the witness model provides
+
+If witnesses (§23.4) or observers (§23.6) were running before the attack:
+
+- Witnesses hold signed receipts with the last-known-good `lsn`, `manifest_hash`, and `audit_head`.
+- The witness receipts are stored on separate machines with separate credentials. Ransomware on the primary cannot reach them without lateral movement.
+- On recovery, the operator knows exactly which LSN to restore to. The recovery point is not "the last backup" but "the last LSN the witnesses saw before the attack."
+
+This is the complement to §25.1: detection gives you a hard stop; witness receipts give you a precise recovery target.
+
+### 25.3 Key hierarchy resilience
+
+The DEK is wrapped by protectors. A ransomware process running as the database user can read the database file and any keyfile stored in the same directory. It cannot read a:
+
+- Passphrase the user typed at open time (never on disk)
+- Recovery key the user stored offline or in a separate credential store
+- TPM-sealed key (accessible only on the same hardware, under the same TPM policy, often gated by platform auth)
+
+After a ransomware incident and database restoration from backup:
+
+1. Rotate the sentinel key or any protectors the attacker may have observed.
+2. Add a new protector with a fresh passphrase or recovery key.
+3. Use `tosumu rekey-kek` to rewrap the DEK under the new protectors.
+4. Remove compromised keyslots.
+
+The DEK itself never needs to change if the attacker only had file-level access and could not read process memory — key rotation is a KEK operation (cheap, §8.8), not a DEK operation.
+
+### 25.4 Append-only audit log strategy
+
+On Linux, the audit log file can be opened with `O_APPEND` and the filesystem append-only flag (`chattr +a`). A process with normal user permissions can append to the file but cannot overwrite or truncate it. Ransomware running as the database user cannot destroy the audit log — it can only append garbage, which will fail AEAD verification and be identifiable as the attack artifact.
+
+On Windows, the equivalent is NTFS object permissions: grant `FILE_APPEND_DATA` but not `FILE_WRITE_DATA` or `DELETE` to the database service account.
+
+This is outside Tosumu's direct control (it is a deployment concern) but should be configured in any environment where the audit log is treated as evidence.
+
+### 25.5 OS-level snapshot strategies (outside Tosumu)
+
+These are complementary and outside Tosumu's responsibility, but warrant documentation:
+
+| Strategy | Platform | What it provides |
+|----------|----------|------------------|
+| Volume Shadow Copy (VSS) | Windows | Point-in-time snapshots of volumes; ransomware typically cannot delete VSS snapshots without admin rights |
+| ZFS snapshots | Linux/FreeBSD | Instant, writable snapshots; can be made read-only after creation; stored as part of the pool the ransomware cannot normally reach |
+| btrfs snapshots | Linux | Similar to ZFS; subvolume snapshots; can be made read-only |
+| Filesystem-level immutability (`chattr +i`) | Linux | Immutable flag; even root cannot modify without removing the flag first |
+| Offsite / cloud backup with retention | Any | The last line of defense; a ransomware-resistant copy requires write-once / object-lock semantics at the storage layer |
+
+The correct deployment posture is: Tosumu detects immediately (§25.1), witnesses provide a precise recovery point (§25.2), and OS snapshots or offsite backups provide the restorable copy. No single layer is sufficient alone.
+
+### 25.6 What Tosumu does not protect against
+
+- **Ransomware with process memory access.** If the attacker can read process memory, they can extract the in-memory DEK. This is out of scope per §8.1 and requires OS-level mitigations (e.g., memory encryption, process isolation) outside Tosumu's control.
+- **Ransomware with admin/root.** A process with root can remove append-only flags, delete VSS snapshots, and access TPM-sealed keys under some policies. Defense requires privileged access management outside Tosumu.
+- **Pre-encryption exfiltration.** Ransomware that reads and exfiltrates data before encrypting it. Tosumu's AEAD protects data at rest from passive readers without the key; it does not protect against a process that legitimately holds the key (i.e., runs as the database user).
+- **Backup destruction before detection.** If ransomware destroys backups before the next health check, the recovery window depends entirely on the backup strategy. Witness receipts survive only if witnesses are on separate machines.
+
+### 25.7 Design principle
+
+> Ransomware cannot produce a valid Tosumu database. It can only produce a broken one. The question is how quickly the operator knows.
+
+Tosumu's answer: immediately, on the next open, with a typed error that distinguishes AEAD failure (ransomware / tampering) from a legitimate corruption event.
 
 ---
