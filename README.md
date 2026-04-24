@@ -8,7 +8,21 @@ The name is a conlang word: `to` (knowledge) + `su` (organized structure) + `mu`
 
 ## Status
 
-**Pre-alpha.** No stage has shipped yet. Design is in [`DESIGN.md`](DESIGN.md); that is the source of truth until the first stage releases.
+**MVP +7 complete.** The core storage engine and full encryption/key-management stack are implemented and tested. 125 tests pass across `tosumu-core` and `tosumu-cli`, including an adversarial suite covering crash simulation, cross-DB splice attacks, snapshot rollback, slot-reuse stale-AAD, and structural invariant sweeps.
+
+| MVP | Capability | State |
+|---|---|---|
+| 0 | Append-log store, CLI (put/get/scan) | ✅ done |
+| +1 | Real on-disk format: 4 KB pages, slotted layout, freelist | ✅ done |
+| +2 | Debug trio: `dump`, `hex`, `verify`; fuzz target for page decode | ✅ done |
+| +3 | B+ tree index, overflow pages, sorted scan | ✅ done |
+| +4 | Write-ahead log, transactions, crash recovery | ✅ done |
+| +5 | `CrashWriter` harness, `check_invariants()`, property tests | ✅ done |
+| +6 | Envelope encryption: per-page AEAD, single passphrase protector, KATs | ✅ done |
+| +7 | Multiple protectors: up to 8 keyslots, recovery key, KEK rotation, `protector` CLI | ✅ done |
+| +8 | Interactive TUI viewer (`tosumu view`) | 🔲 next |
+| +9 | Toy SQL layer | 🔲 planned |
+| +10 | MVCC / multiple readers | 🔲 planned |
 
 ## Warning
 
@@ -16,53 +30,64 @@ The name is a conlang word: `to` (knowledge) + `su` (organized structure) + `mu`
 >
 > The crypto design is carefully documented, but it is not audited, not reviewed, not hardened, and not production-ready. See [`SECURITY.md`](SECURITY.md).
 
-## What it aims to be
+## What it is
 
-- **Single-file, single-process, embedded** — like SQLite in shape. Runs on desktop (Linux, macOS, Windows) and mobile (iOS, Android via Stage 7+ FFI layer).
-- **Page-based** — 4 KB pages, slotted layout, B+ tree index.
-- **Write-ahead log** — physical (full-page) logging, crash-recoverable.
-- **Per-page AEAD** — ChaCha20-Poly1305, with page number, version, and type bound as AAD.
-- **Envelope encryption** — random DEK per database; DEK wrapped by one or more **protectors** (passphrase, recovery key, keyfile, TPM on desktop, Keychain on iOS, Keystore on Android). Rotate a passphrase without rewriting pages.
-- **Explicit migrations** — safe additive migrations run automatically; destructive ones require an explicit call. See `DESIGN.md §12`.
-- **Finishable by a mortal.** Staged roadmap, each stage runnable and testable on its own.
+- **Single-file, single-process, embedded** — like SQLite in shape.
+- **4 KB pages** — slotted layout, B+ tree index, overflow pages for large values.
+- **Write-ahead log** — physical (full-page) logging, crash-recoverable at any write site.
+- **Per-page AEAD** — ChaCha20-Poly1305; page number, version, and type bound as AAD.
+- **Envelope encryption** — random DEK per database, HKDF-derived page key and MAC key. DEK wrapped by up to 8 independent **protectors** (passphrase or recovery key today; keyfile, TPM, Secure Enclave planned). Rotate a passphrase without rewriting pages.
+- **Header MAC** — HMAC-SHA256 over the full keyslot region; protector-swap and cross-DB splice attacks are rejected at open time.
+- **`#![forbid(unsafe_code)]`** throughout.
 
-## What it explicitly is not
+## What it is not
 
-- Not SQL-complete, not a query optimizer, not a planner.
-- Not multi-process.
+- Not SQL-complete, not a query optimizer, not a planner (planned for MVP+9).
+- Not multi-process or multi-reader (planned for MVP+10).
 - Not networked.
 - Not a drop-in SQLite replacement.
 - Not audited crypto.
 
-## Roadmap
-
-See `DESIGN.md §11` for desktop stages and `DESIGN.md §18` for mobile platform support. In brief:
-
-| Stage | Focus |
-|---|---|
-| 1 | Storage only: pages, freelist, slotted records, CLI |
-| 2 | B+ tree index, overflow pages |
-| 3 | Transactions + WAL + crash recovery |
-| 4a | Envelope encryption with one protector |
-| 4b | Multiple protectors, recovery key, KEK rotation |
-| 4c | Optional TPM protector (feature-flagged) |
-| 5 | Toy SQL layer |
-| 6 | Stretch: MVCC, secondary indexes, benchmarks |
-| 7+ | Mobile: FFI layer, iOS (Keychain protector), Android (Keystore protector) |
-
-## Build
-
-Once the workspace lands (Stage 1):
+## Build and run
 
 ```sh
 cargo build --release
-cargo test
+cargo test --workspace
+
+# Unencrypted DB
 cargo run -- init app.tsm
 cargo run -- put app.tsm hello world
 cargo run -- get app.tsm hello
+
+# Encrypted DB
+cargo run -- init --encrypt app.tsm           # prompts for passphrase
+cargo run -- protector add-recovery app.tsm   # displays one-time recovery key
+cargo run -- protector list app.tsm
+cargo run -- rekey-kek --slot 0 app.tsm       # rotate passphrase without page rewrite
 ```
 
-Minimum Rust version and exact commands will be pinned in `rust-toolchain.toml` once it exists.
+MSRV: Rust 1.75, edition 2021.
+
+## Crypto stack (summary)
+
+| Primitive | Use |
+|---|---|
+| ChaCha20-Poly1305 | Per-page AEAD |
+| HKDF-SHA256 | DEK → page_key, header_mac_key, audit_key |
+| Argon2id (m=65536, t=3, p=1) | Passphrase → KEK |
+| HMAC-SHA256 | Header MAC over keyslot region |
+| ChaCha20-Poly1305 | DEK wrap/unwrap |
+| HKDF-SHA256 (no Argon2id) | Recovery key → KEK |
+
+Full details: `DESIGN.md §8`.
+
+## Fuzz targets
+
+Six `cargo fuzz` targets in `fuzz/fuzz_targets/`: page decode, B+ tree ops, WAL replay, AEAD frame, keyslot parse, and B+ tree crash boundaries. Run manually before each milestone: `cargo fuzz run <target> -- -max_total_time=300`.
+
+## Roadmap
+
+See [`DESIGN.md §12`](DESIGN.md) for the full MVP and stage breakdown. Next milestone is MVP+8 — an interactive TUI viewer (`ratatui` + `crossterm`) for inspecting file header, pages, B+ tree structure, WAL records, and per-keyslot detail on encrypted databases.
 
 ## License
 
@@ -77,6 +102,6 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 
 ## Further reading
 
-- [`DESIGN.md`](DESIGN.md) — the design doc. Read this first.
-- [`SECURITY.md`](SECURITY.md) — threat model summary and reporting.
-- [`REFERENCES.md`](REFERENCES.md) — reference implementations and resources that inform tosumu's design.
+- [`DESIGN.md`](DESIGN.md) — the design doc. Source of truth for all decisions.
+- [`SECURITY.md`](SECURITY.md) — threat model summary and responsible disclosure.
+- [`REFERENCES.md`](REFERENCES.md) — reference implementations that informed the design.
