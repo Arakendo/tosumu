@@ -1197,13 +1197,13 @@ The debug tooling from §12.3. Without it, debugging MVP+3 onward is guesswork.
 
 **Proves:** "no silent corruption" principle (§2.4) works end-to-end.
 **Demo:** Hand-edit a byte in a page with a hex editor → `tosumu verify` reports it.
-**Explicitly not there:** no interactive viewer (that's MVP+7).
+**Explicitly not there:** no interactive viewer (that's MVP+8).
 
 #### MVP +3 — "It scales past linear scan" *(Stage 2 B+ tree)*
 
 Replace linear scan with a B+ tree index. Enables range scans in sorted order.
 
-- Internal pages, splits, lazy deletes (merge in MVP+6 if needed).
+- Internal pages, splits, lazy deletes (merge in MVP+7 if needed).
 - Overflow pages for large values (records exceeding §5.4.2 cap).
 - `scan_by_key()` returns keys in sorted order; `scan_physical()` stays for debugging.
 - Property tests: tree height O(log n), sorted iteration, invariants after random insert/delete.
@@ -1226,9 +1226,26 @@ Transactions and Write-Ahead Log. First real durability guarantee.
 
 **Proves:** durability. Power loss during commit leaves DB consistent.
 **Demo:** Run `CrashFs` test — inject crash at 20 sites, every recovery is consistent.
-**Explicitly not there:** no user-configured passphrase (sentinel only until MVP +5), no multi-reader concurrency.
+**Explicitly not there:** no user-configured passphrase (sentinel only until MVP +6), no multi-reader concurrency.
 
-#### MVP +5 — "It's encrypted" *(Stage 4a — single protector)*
+#### MVP +5 — "It can't be lied to" *(Stage 3 correctness harness)*
+
+Fault injection, structural invariant checker, and property-based crash testing. Proves the system maintains correctness guarantees under adversarial write failures — not just under clean-close conditions.
+
+- `BTree::check_invariants()`: DFS walk verifying page types, slot offsets, separator routing, uniform depth, leaf-chain order, no duplicate live keys. (Half-occupancy deferred until delete/merge rebalancing exists.)
+- `CrashWriter` harness (`test_helpers.rs`): phase-based `Write + Seek` wrapper that injects `BrokenPipe` at five precise phases — `BeforeWrite`, `MidWrite { fail_after_bytes }`, `AfterWrite`, `DuringTruncate`. Shared across all crate-internal crash tests.
+- WAL append crash tests: crash mid-PageWrite record, crash after PageWrite with no Commit, crash mid-Commit record. Each verifies old state is preserved (no partial transaction applied).
+- Named invariant: **"WAL is never truncated unless apply succeeded"** — proven by construction: `checkpoint()` calls `recover()` first; if `recover()` fails, `set_len(0)` is never reached.
+- `prop_btree_ops_invariants_always_hold` (proptest, 64 cases): random `put`/`delete` sequences with narrow key alphabet; `check_invariants()` called after every operation; final scan matched against BTreeMap model.
+- Fuzz target: `fuzz_btree_crash_boundaries` — commits real transactions, truncates WAL at `crash_seed % wal_size`, reopens, asserts `check_invariants()` passes and no `AuthFailed`.
+- `tosumu verify` extended: structural invariant check runs after page AEAD walk passes.
+- `pub DEFAULT_MAX_RETRIES`, `open_file_retrying_n()`: retry budget made externally configurable; mutex-poison cascade in fault-injection tests fixed.
+
+**Proves:** the engine cannot be left in a half-written state by a crash at any WAL write site. Correctness is checkable by machine, not just by eye.
+**Demo:** Run `fuzz_btree_crash_boundaries` with arbitrary byte input — no panic, no `AuthFailed`, `check_invariants()` always passes after recovery.
+**Explicitly not there:** no delete/merge rebalancing (so half-occupancy invariant deferred), no multi-writer crash testing.
+
+#### MVP +6 — "It's encrypted" *(Stage 4a — single protector)*
 
 One protector (passphrase), full crypto stack working end-to-end. This is the biggest single leap in the plan.
 
@@ -1245,7 +1262,7 @@ One protector (passphrase), full crypto stack working end-to-end. This is the bi
 **Demo:** `tosumu init --encrypt db.tsm` → passphrase prompt → insert data → reopen with wrong passphrase → `WrongKey` error (not panic, not partial plaintext).
 **Explicitly not there:** no recovery key, no key rotation, no TPM.
 
-#### MVP +6 — "Key management works" *(Stage 4b — multiple protectors)*
+#### MVP +7 — "Key management works" *(Stage 4b — multiple protectors)*
 
 Multiple protectors, recovery key, cheap KEK rotation.
 
@@ -1254,27 +1271,27 @@ Multiple protectors, recovery key, cheap KEK rotation.
 - Optional **Keyfile** protector.
 - CLI: `tosumu protector add|remove|list`.
 - `tosumu rekey-kek` (fast — rewraps DEK only).
-- `tosumu rekey-dek` (slow — rewrites all pages; may slip to MVP+10).
+- `tosumu rekey-dek` (slow — rewrites all pages; may slip to MVP+11).
 - Tests: protector-swap attack must fail (§8.7 AAD binding).
 
 **Proves:** real-world key management scenarios work. Lost passphrase doesn't mean lost data.
 **Demo:** Add recovery key, delete passphrase slot, unlock with recovery key.
 **Explicitly not there:** no TPM, no mobile key storage.
 
-#### MVP +7 — "It's interactively inspectable" *(Stage 2–4 TUI viewer)*
+#### MVP +8 — "It's interactively inspectable" *(Stage 2–4 TUI viewer)*
 
-Interactive TUI viewer (§12.4). Can slot in any time after MVP+2, but most valuable after MVP+5 when encrypted DB inspection becomes interesting.
+Interactive TUI viewer (§12.4). Can slot in any time after MVP+2, but most valuable after MVP+6 when encrypted DB inspection becomes interesting.
 
 - `tosumu view <path>` — ratatui + crossterm TUI.
 - Views: file header, page list, page detail, B+ tree structure, WAL records, verification.
-- Encrypted DB views (after MVP+5): protector summary, keyslot detail, per-page auth status.
+- Encrypted DB views (after MVP+6): protector summary, keyslot detail, per-page auth status.
 - Keyboard navigation, colorized output, watch mode, read-only.
 
 **Proves:** the "storage engine autopsy table" aesthetic (§12.4).
 **Demo:** `tosumu view db.tsm` → navigate pages → see B+ tree visually → spot corrupt page highlighted red.
 **Explicitly not there:** no write operations, no query builder, no remote connections.
 
-#### MVP +8 — "It speaks SQL (toy)" *(Stage 5 query layer)*
+#### MVP +9 — "It speaks SQL (toy)" *(Stage 5 query layer)*
 
 Minimal query layer. Proves the engine supports relational-style workloads.
 
@@ -1287,7 +1304,7 @@ Minimal query layer. Proves the engine supports relational-style workloads.
 **Demo:** `CREATE TABLE users (id, name); INSERT INTO users VALUES (1, 'alice'); SELECT * FROM users WHERE id = 1`.
 **Explicitly not there:** no joins, no GROUP BY, no aggregates, no transactions over SQL (use library API).
 
-#### MVP +9 — "Multiple readers" *(Stage 6 — MVCC snapshots)*
+#### MVP +10 — "Multiple readers" *(Stage 6 — MVCC snapshots)*
 
 Multi-reader concurrency without blocking writes.
 
@@ -1301,19 +1318,19 @@ Multi-reader concurrency without blocking writes.
 **Demo:** 10 reader threads scanning while 1 writer inserts — no contention, no stale errors.
 **Explicitly not there:** no multi-writer, no distributed concurrency.
 
-#### MVP +10 — "It runs on mobile" *(Stage 7 — iOS/Android)*
+#### MVP +11 — "It runs on mobile" *(Stage 7 — iOS/Android)*
 
 Per §19, mobile support with hardware-backed key storage.
 
-- **MVP +10a:** C FFI layer (`tosumu-ffi`) with Swift/Kotlin bindings.
-- **MVP +10b:** iOS wrapper with `IosKeychainProtector` (Secure Enclave).
-- **MVP +10c:** Android wrapper with `AndroidKeystoreProtector` (Keystore API).
+- **MVP +11a:** C FFI layer (`tosumu-ffi`) with Swift/Kotlin bindings.
+- **MVP +11b:** iOS wrapper with `IosKeychainProtector` (Secure Enclave).
+- **MVP +11c:** Android wrapper with `AndroidKeystoreProtector` (Keystore API).
 
 **Proves:** the engine is portable to constrained platforms with hardware crypto.
 **Demo:** iOS demo app reads/writes encrypted tosumu DB with biometric unlock.
 **Explicitly not there:** no iCloud sync, no cross-device replication, no web assembly target.
 
-#### MVP +11 — "It runs in a cluster" *(Stage 8+ — witness/observer on K3s)*
+#### MVP +12 — "It runs in a cluster" *(Stage 8+ — witness/observer on K3s)*
 
 Deploy the three-server witness model (§23.4) and local observer model (§23.6) as containerised workloads on a lightweight Kubernetes cluster. K3s is the reference target: single-binary, runs on resource-constrained hardware, close enough to production Kubernetes to be meaningful.
 
@@ -1329,20 +1346,21 @@ Deploy the three-server witness model (§23.4) and local observer model (§23.6)
 
 #### MVP increment summary table
 
-| MVP | Ships | Proves | Maps to stage |
-|-----|-------|--------|---------------|
-| 0 | Append-only log, in-memory index | I/O works, binary runs | pre-Stage 1 |
-| +1 | Slotted pages, file header, freelist | On-disk format works | Stage 1 storage |
-| +2 | `dump` / `hex` / `verify`, fuzz page decode | No silent corruption | Stage 1 debug |
-| +3 | B+ tree, range scans, overflow pages | Real DB lookups | Stage 2 |
-| +4 | Transactions, WAL, `CrashFs` | Durability | Stage 3 |
-| +5 | Passphrase-encrypted DB, KATs | Crypto works end-to-end | Stage 4a |
-| +6 | Multiple protectors, recovery key, KEK rotation | Key management works | Stage 4b |
-| +7 | TUI viewer (`tosumu view`) | Interactive inspection | Stage 2–4 crosscut |
-| +8 | Toy SQL (`CREATE TABLE`, `SELECT`) | Real query foundation | Stage 5 |
-| +9 | MVCC readers, secondary indexes, `VACUUM` | Concurrency | Stage 6 |
-| +10 | iOS/Android FFI, Keychain/Keystore | Mobile portability | Stage 7 |
-| +11 | K3s cluster: server + witnesses + observer sidecar | Audit/witness in real deployment | Stage 8 |
+| MVP | Ships | Proves | Maps to stage | Status |
+|-----|-------|--------|---------------|--------|
+| 0 | Append-only log, in-memory index | I/O works, binary runs | pre-Stage 1 | ✅ done |
+| +1 | Slotted pages, file header, freelist | On-disk format works | Stage 1 storage | ✅ done |
+| +2 | `dump` / `hex` / `verify`, fuzz page decode | No silent corruption | Stage 1 debug | ✅ done |
+| +3 | B+ tree, range scans, overflow pages | Real DB lookups | Stage 2 | ✅ done |
+| +4 | Transactions, WAL, recovery, retry-on-lock | Durability | Stage 3 | ✅ done |
+| +5 | `CrashWriter`, `check_invariants`, proptest, crash-boundary fuzz | No partial transactions under crash | Stage 3 correctness | ✅ done |
+| +6 | Passphrase-encrypted DB, Argon2id, KATs | Crypto works end-to-end | Stage 4a | 🔜 next |
+| +7 | Multiple protectors, recovery key, KEK rotation | Key management works | Stage 4b | |
+| +8 | TUI viewer (`tosumu view`) | Interactive inspection | Stage 2–4 crosscut | |
+| +9 | Toy SQL (`CREATE TABLE`, `SELECT`) | Real query foundation | Stage 5 | |
+| +10 | MVCC readers, secondary indexes, `VACUUM` | Concurrency | Stage 6 | |
+| +11 | iOS/Android FFI, Keychain/Keystore | Mobile portability | Stage 7 | |
+| +12 | K3s cluster: server + witnesses + observer sidecar | Audit/witness in real deployment | Stage 8 | |
 
 **How to use this table:**
 
@@ -3596,9 +3614,9 @@ Dependency rules mirror the existing layer invariant (§4): `tosumu-core` has no
 
 The reference deployment target for the three-server witness model (§23.4) and observer sidecar model (§23.6) is **K3s** — a single-binary Kubernetes distribution that runs on resource-constrained hardware. K3s is close enough to production Kubernetes that patterns proven there transfer directly, without the overhead of a full cluster for development.
 
-This is deferred to MVP +11 (§12.0). Nothing in §23.1–§23.10 requires K3s to be running. The witness and observer APIs are transport-agnostic; the K3s deployment layer sits entirely above them.
+This is deferred to MVP +12 (§12.0). Nothing in §23.1–§23.10 requires K3s to be running. The witness and observer APIs are transport-agnostic; the K3s deployment layer sits entirely above them.
 
-Key K3s deployment decisions that must be made at MVP +11, not before:
+Key K3s deployment decisions that must be made at MVP +12, not before:
 
 - **PVC type for the DB file.** Local-path provisioner is fine for single-node K3s; Longhorn or a cloud block store for multi-node. The DB file must never be on a shared NFS mount (§21).
 - **Observer IPC.** In K3s, `tosumu-observer` runs as a sidecar in the same Pod as `tosumu-server`, communicating via a Unix socket on a shared `emptyDir` volume. This is the correct topology — the observer is local to the process, not across the network.
