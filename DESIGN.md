@@ -1408,16 +1408,87 @@ enum Expr {
 - **Structural injection prevention** — parameter values are `Expr::Parameter` leaf nodes, never re-parsed as SQL grammar. Interpolated strings can't exist at the execution layer.
 - **Incremental optimization** — constant folding, predicate pushdown, projection pruning are each a tree-rewrite pass that can be added independently. Without an AST, any optimization requires rewriting the whole parser.
 
+**Planner warnings — emitted before the executor runs:**
+
+The planner classifies every query to choose a strategy. Warnings are a side-effect of that decision — nothing extra to compute. The planner returns `(PlanNode, Vec<PlanWarning>)`; the CLI prints warnings before executing; the library API surfaces them on the query result so callers can log or surface them.
+
+```rust
+enum PlanWarning {
+    FullTableScan        { table: String, estimated_rows: Option<u64> },
+    NoIndexOnPredicate   { table: String, column: String },
+    MutationWithoutPredicate { table: String, operation: &'static str },
+    LargeResultExpected  { table: String, estimated_rows: u64 },
+}
+```
+
+| Pattern detected in AST / plan | Warning emitted |
+|---|---|
+| `SELECT … FROM t` with no `WHERE` | `FullTableScan` — "full scan, O(n) pages" |
+| `WHERE non_pk_col = ?` | `NoIndexOnPredicate` — "no index on `col`, full scan" |
+| `DELETE FROM t` with no `WHERE` | `MutationWithoutPredicate` — "deletes all rows" |
+| Full scan on a table > `WARN_SCAN_ROWS` estimated rows | `LargeResultExpected` — "~N estimated rows" |
+
+Estimated row count comes from `pager.page_count()` × a rough `ROWS_PER_PAGE_ESTIMATE` constant — always available from the file header, no `ANALYZE` step required.
+
+**Database shape audit** (`tosumu audit <path>` subcommand):
+
+A read-only pass over the system catalog and page header that answers "given what I can see about this database, what would help?" — no query string required.
+
+```
+$ tosumu audit db.tsm
+Table 'events'  (14 823 rows, 7 pages)
+  [WARN]  No index — all queries will full-scan this table.
+  [WARN]  Row count > 10 000. Consider adding an index on your most-queried column.
+
+Table 'users'   (4 rows, 1 page)
+  [OK]    Small table — full scans are fine.
+
+Header
+  [OK]    Page size 4096 B.
+  [WARN]  Freelist depth 312 pages (38 % of total). Consider VACUUM.
+  [OK]    WAL file not present — database is checkpointed.
+
+Overall: 2 warnings, 0 errors.
+```
+
+Audit sources (all available without executing any SQL):
+- **System catalog** — table list, rootpage pointers, declared column list.
+- **Page header** — page count, freelist depth, WAL presence.
+- **B+ tree metadata** — tree height (from root page); excessive height relative to row count implies large tombstone population or poor fill-factor.
+
+The audit produces a machine-readable `Vec<AuditFinding>` from the library and a human-readable table from the CLI:
+
+```rust
+enum AuditFinding {
+    TableNoIndex         { table: String, estimated_rows: u64 },
+    TableLargeFullScan   { table: String, estimated_rows: u64 },
+    FreelistHigh         { free_pages: u64, total_pages: u64, pct: u8 },
+    WalNotCheckpointed   { wal_pages: u64 },
+    TreeHeightSuspicious { table: String, height: u8, estimated_rows: u64 },
+}
+```
+
+Index suggestions are advisory — MVP+9 has only the primary-key B+ tree. When MVP+10 ships secondary indexes, `tosumu audit` will automatically promote its suggestions to actionable DDL:
+
+```
+  [SUGGEST]  CREATE INDEX events_ts ON events (timestamp);
+             Estimated full-scan size: 14 823 rows.
+             With this index, point-lookup queries on `timestamp` become O(log n).
+```
+
 **Deliverables:**
 - `tosumu-sql` crate: `Lexer`, `Parser`, `Ast`, `SemanticChecker`, `Planner`, `Executor`.
+- `Planner` returns `(PlanNode, Vec<PlanWarning>)` on every query.
+- `Auditor` struct in `tosumu-sql` — reads catalog + page header, returns `Vec<AuditFinding>`.
 - System catalog stored in a reserved page (page 1): `(rootpage: u64, table_name: &str)` per table.
 - Single-column primary key. No joins, no planner beyond point-lookup vs. full-scan choice.
 - Prepared statement API: `let stmt = db.prepare("SELECT * FROM t WHERE id = ?")?; stmt.bind(42)?.step()?`.
 - CLI: `tosumu sql <path> "SELECT * FROM users WHERE id = 42"`.
+- CLI: `tosumu audit <path>` — prints `AuditFinding` table; exits 1 if any warnings.
 
-**Proves:** the storage engine is a real foundation for query languages.
-**Demo:** `CREATE TABLE users (id, name); INSERT INTO users VALUES (1, 'alice'); SELECT * FROM users WHERE id = 1`.
-**Explicitly not there:** no joins, no GROUP BY, no aggregates, no transactions over SQL (use library API).
+**Proves:** the storage engine is a real foundation for query languages, and the tooling tells you when you're using it wrong.
+**Demo:** `CREATE TABLE users (id, name); INSERT INTO users VALUES (1, 'alice'); SELECT * FROM users WHERE id = 1`. `tosumu audit db.tsm` shows the small table is fine; a 50 000-row table with no index gets a warning.
+**Explicitly not there:** no joins, no GROUP BY, no aggregates, no transactions over SQL (use library API), no secondary indexes (MVP+10), no histogram-based selectivity estimates (needs `ANALYZE`, Stage 6+).
 
 #### MVP +10 — "Multiple readers" *(Stage 6 — MVCC snapshots)*
 
