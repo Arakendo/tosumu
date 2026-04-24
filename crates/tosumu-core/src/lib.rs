@@ -4,6 +4,10 @@
 #![forbid(unsafe_code)]
 
 pub mod error;
+pub mod format;
+pub mod crypto;
+pub mod pager;
+pub mod page_store;
 pub mod log_store;
 
 /// Compile-time project name. Used by the CLI and by log output.

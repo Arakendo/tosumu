@@ -1,13 +1,13 @@
-//! `tosumu` command-line interface — MVP 0.
+//! `tosumu` command-line interface — MVP +1.
 //!
-//! Append-only log store. No pages, no AEAD. See DESIGN.md §12.0 (MVP 0).
+//! Real page-based format with Sentinel AEAD. See DESIGN.md §12.0 (MVP +1).
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
-use tosumu_core::log_store::LogStore;
+use tosumu_core::page_store::PageStore;
 
 #[derive(Parser)]
-#[command(name = tosumu_core::NAME, version, about = "tosumu key-value store (MVP 0)")]
+#[command(name = tosumu_core::NAME, version, about = "tosumu key-value store (MVP +1)")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -15,6 +15,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a new database file.
+    Init {
+        path: PathBuf,
+    },
     /// Insert or update a key-value pair.
     Put {
         path: PathBuf,
@@ -35,6 +39,10 @@ enum Command {
     Scan {
         path: PathBuf,
     },
+    /// Show database statistics.
+    Stat {
+        path: PathBuf,
+    },
 }
 
 fn main() {
@@ -48,14 +56,18 @@ fn main() {
 
 fn run(cli: Cli) -> Result<(), tosumu_core::error::TosumError> {
     match cli.command {
+        Command::Init { path } => {
+            PageStore::create(&path)?;
+            println!("initialized {}", path.display());
+        }
         Command::Put { path, key, value } => {
-            let mut store = LogStore::open(&path)?;
+            let mut store = PageStore::open(&path)?;
             store.put(key.as_bytes(), value.as_bytes())?;
         }
         Command::Get { path, key } => {
-            let store = LogStore::open(&path)?;
-            match store.get(key.as_bytes()) {
-                Some(v) => println!("{}", String::from_utf8_lossy(v)),
+            let store = PageStore::open(&path)?;
+            match store.get(key.as_bytes())? {
+                Some(v) => println!("{}", String::from_utf8_lossy(&v)),
                 None => {
                     eprintln!("not found");
                     std::process::exit(1);
@@ -63,16 +75,20 @@ fn run(cli: Cli) -> Result<(), tosumu_core::error::TosumError> {
             }
         }
         Command::Delete { path, key } => {
-            let mut store = LogStore::open(&path)?;
+            let mut store = PageStore::open(&path)?;
             store.delete(key.as_bytes())?;
         }
         Command::Scan { path } => {
-            let store = LogStore::open(&path)?;
-            let mut pairs: Vec<(&[u8], &[u8])> = store.scan().collect();
-            pairs.sort_unstable_by_key(|(k, _)| *k);
-            for (k, v) in pairs {
-                println!("{}\t{}", String::from_utf8_lossy(k), String::from_utf8_lossy(v));
+            let store = PageStore::open(&path)?;
+            for (k, v) in store.scan()? {
+                println!("{}\t{}", String::from_utf8_lossy(&k), String::from_utf8_lossy(&v));
             }
+        }
+        Command::Stat { path } => {
+            let store = PageStore::open(&path)?;
+            let s = store.stat();
+            println!("page_count:  {}", s.page_count);
+            println!("data_pages:  {}", s.data_pages);
         }
     }
     Ok(())
