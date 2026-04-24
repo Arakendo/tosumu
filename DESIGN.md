@@ -580,7 +580,7 @@ Quick reference for API design reviews:
 
 Testing is a first-class concern. A storage engine is only as good as the confidence that it won't corrupt data, and confidence comes from systematic, repeatable, adversarial testing. This section is normative: every module ships with its tests, and every stage gate includes test requirements.
 
-### 10.1 Testing philosophy
+### 11.1 Testing philosophy
 
 - **No untested code paths.** If a function can return an error, there's a test that triggers it.
 - **Property tests > example tests.** Arbitrary inputs catch edge cases humans don't think of.
@@ -589,7 +589,7 @@ Testing is a first-class concern. A storage engine is only as good as the confid
 - **Tests document behavior.** A test name like `test_compaction_preserves_slot_order` is a spec.
 - **Realistic, not exhaustive.** This is a learning project. We aim for *high confidence*, not formal proof.
 
-### 10.2 Test categories and organization
+### 11.2 Test categories and organization
 
 Tests live in three places:
 
@@ -599,7 +599,7 @@ Tests live in three places:
 | `tests/*.rs` | Integration tests that exercise the public API across module boundaries. | `cargo test` |
 | `fuzz/fuzz_targets/*.rs` | `cargo-fuzz` / libFuzzer targets. | `cargo fuzz run <target>` (manual, not CI) |
 
-### 10.3 Unit tests (inline, per-module)
+### 11.3 Unit tests (inline, per-module)
 
 Standard `#[cfg(test)]` modules in each `.rs` file. Cover:
 
@@ -625,7 +625,7 @@ Standard `#[cfg(test)]` modules in each `.rs` file. Cover:
   - `test_dirty_page_not_evicted` — LRU can't evict a dirty page before flush.
   - `test_double_free_panics` — internal invariant; debug_assert caught in tests.
 
-### 10.4 Property tests (`proptest`)
+### 11.4 Property tests (`proptest`)
 
 Property tests generate hundreds or thousands of random inputs and assert invariants hold. Ship with the module they test (same `#[cfg(test)]` block or in `tests/`).
 
@@ -668,7 +668,7 @@ mod proptests {
 }
 ```
 
-### 10.5 Fuzz targets (`cargo fuzz`)
+### 11.5 Fuzz targets (`cargo fuzz`)
 
 Fuzzing is continuous property testing with coverage-guided mutation. Targets live in `fuzz/fuzz_targets/`. Each is a small `fn` that takes `&[u8]` and must not panic.
 
@@ -684,7 +684,7 @@ Fuzzing is continuous property testing with coverage-guided mutation. Targets li
 
 **CI integration:** Fuzz targets are **not** run in CI (too slow). They run manually before each stage release: `cargo fuzz run <target> -- -max_total_time=300` (5 min per target). Findings block release.
 
-### 10.6 Integration tests (`tests/*.rs`)
+### 11.6 Integration tests (`tests/*.rs`)
 
 Integration tests exercise the public API as a user would. They test cross-module interactions, not implementation details.
 
@@ -734,7 +734,7 @@ fn test_scan_returns_keys_in_insertion_order() {
 }
 ```
 
-### 10.7 Crash simulation (`CrashFs` harness)
+### 11.7 Crash simulation (`CrashFs` harness)
 
 **Goal:** Prove that recovery is correct for every possible crash point during a transaction.
 
@@ -770,7 +770,7 @@ fn test_recovery_after_commit_interrupted() {
 
 **Coverage target:** Crash at every await point in the commit path (10–20 injection sites). All must leave the DB consistent.
 
-### 10.8 Known-answer tests (KATs) — crypto
+### 11.8 Known-answer tests (KATs) — crypto
 
 KATs prevent accidental changes to cryptographic constructions. Each one specifies:
 
@@ -788,7 +788,7 @@ KATs prevent accidental changes to cryptographic constructions. Each one specifi
 
 KATs live in `crypto.rs` as unit tests with hardcoded hex constants.
 
-### 10.9 Fixtures and golden files
+### 11.9 Fixtures and golden files
 
 Golden files are checked-in database files with known contents. They serve two purposes:
 
@@ -821,7 +821,7 @@ fn test_open_v1_fixture() {
 }
 ```
 
-### 10.10 Stage-specific acceptance tests
+### 11.10 Stage-specific acceptance tests
 
 Every stage has a checklist of acceptance tests that must pass before the stage is marked "done." These are integration tests + manual CLI invocations.
 
@@ -855,7 +855,7 @@ Every stage has a checklist of acceptance tests that must pass before the stage 
 - Rotate KEK → old passphrase fails, new passphrase succeeds.
 - Add recovery key, delete passphrase slot → recovery key unlocks.
 
-### 10.11 Performance and regression testing
+### 11.11 Performance and regression testing
 
 Performance is **not** a primary goal, but catastrophic regressions are worth catching.
 
@@ -869,7 +869,7 @@ Performance is **not** a primary goal, but catastrophic regressions are worth ca
 
 **Regression policy:** A 2× slowdown or file-size bloat is a blocker. A 10% change is noted but not a blocker.
 
-### 10.12 Test coverage
+### 11.12 Test coverage
 
 **Target: line coverage ≥ 80% in `tosumu-core`.** This is realistic for a solo project without being a chore.
 
@@ -882,7 +882,7 @@ Performance is **not** a primary goal, but catastrophic regressions are worth ca
 
 **No CI gating on coverage.** Coverage is a diagnostic, not a gate. Human judgment is required.
 
-### 10.13 What is *not* tested
+### 11.13 What is *not* tested
 
 Honest list of what this testing strategy does not cover:
 
@@ -910,7 +910,7 @@ Each stage ends with a tagged release and a short write-up.
 - Property tests for page + record codec.
 - **Reference:** See `REFERENCES.md` for LruCache (page cache eviction pattern) and RingBuffer (optional WAL buffering).
 
-#### 11.1 Stage 1 simplifications (explicit)
+#### 12.1 Stage 1 simplifications (explicit)
 
 To keep Stage 1 actually finishable, the following are **deliberately not built** and must not be smuggled in:
 
@@ -920,7 +920,7 @@ To keep Stage 1 actually finishable, the following are **deliberately not built*
 - No varint debate: **LEB128**, unsigned, for both `key_len` and `value_len`. Decision closed.
 - No background anything. All work happens on the calling thread.
 
-#### 11.2 Stage 1 debug tooling (ships with Stage 1, not later)
+#### 12.2 Stage 1 debug tooling (ships with Stage 1, not later)
 
 Debugging a storage engine without visibility is a recipe for learned helplessness. These CLI subcommands are part of Stage 1's definition of done:
 
@@ -928,7 +928,7 @@ Debugging a storage engine without visibility is a recipe for learned helplessne
 - `tosumu hex <path> --page N` — raw hex+ASCII dump of one page, 16 bytes per line, with header-field annotations for page 0.
 - `tosumu verify <path>` — walk every page, check page-type consistency, slot bounds (`offset + length <= page_body_size`), freelist reachability, and (Stage 4+) AEAD tag + header MAC. Report every anomaly, exit non-zero on any.
 
-#### 11.3 Viewer evolution (Stage 2+, optional but recommended)
+#### 12.3 Viewer evolution (Stage 2+, optional but recommended)
 
 The CLI inspection tools in §12.2 are the foundation. Once they work, an **interactive viewer** becomes a force multiplier for debugging, learning, and demonstrating tosumu. This section documents the staged viewer evolution so we don't accidentally build "Datagrip Junior" before the database works.
 
@@ -1083,7 +1083,7 @@ Split into three sub-stages because key management is its own discipline and cra
 
 Humans are terrible migration engines. The file format will change; the engine’s job is to detect that, do the safe thing automatically, and refuse loudly when the safe thing is not possible. This section is normative: every format change must declare which category it belongs to and which rules apply.
 
-### 12.1 Version fields
+### 13.1 Version fields
 
 Two distinct `u16`s live in the header:
 
@@ -1101,7 +1101,7 @@ The engine itself has a `SUPPORTED_FORMAT` constant. Open rules:
 
 This lets us ship forward-compatible additions (e.g. a new optional header field) without immediately invalidating older binaries.
 
-### 12.2 Migration categories
+### 13.2 Migration categories
 
 Every migration declares exactly one category. The category determines whether it runs automatically, whether a full rewrite is required, and how crash safety is guaranteed.
 
@@ -1116,7 +1116,7 @@ Every migration declares exactly one category. The category determines whether i
 
 Rule of thumb: **if it touches every page, it is not automatic**.
 
-### 12.3 Policy
+### 13.3 Policy
 
 - **Safe automatic migrations happen on open.** Metadata-only and keyslot-metadata categories upgrade transparently, inside a transaction, and update `format_version` + `min_reader_version` before returning.
 - **Destructive or long-running migrations require an explicit call.** Page-local, index rebuild, logical export/import, and crypto-structural migrations are performed only by `Database::migrate(path, opts)` or `tosumu migrate`.
@@ -1124,7 +1124,7 @@ Rule of thumb: **if it touches every page, it is not automatic**.
 - Every migration is **idempotent**: detects whether it has already run (via `format_version`) and is safe to re-invoke.
 - Every migration ships with its own test: starting from a checked-in fixture file of the pre-migration format, open/migrate/verify must produce the expected post-migration fixture.
 
-### 12.4 Crash-safety model
+### 13.4 Crash-safety model
 
 Two implementation strategies are permitted. Each migration declares which it uses.
 
@@ -1144,13 +1144,13 @@ On crash at any step, the original file is intact and an orphan `.migrating` fil
 
 In-place is only permitted for migrations whose entire delta fits in a single transaction and touches no data pages.
 
-### 12.5 Backups
+### 13.5 Backups
 
 - Automatic migrations **always** write a `.pre-v{N}.bak` next to the file before the first page changes, unless `--no-backup` is passed.
 - `tosumu backup <path>` is a first-class command and is implicitly invoked before any explicit migration.
 - The engine refuses to delete a `.bak` file. That’s the user’s call.
 
-### 12.6 Migration trait and registry
+### 13.6 Migration trait and registry
 
 Migrations are explicit structs implementing a common trait. No if-branch soup in `open()`.
 
@@ -1170,7 +1170,7 @@ inventory::collect!(&'static dyn FormatMigration);
 
 The engine builds a migration **chain** at open time: it walks registered migrations and verifies there is exactly one path from `file.format_version` to `SUPPORTED_FORMAT`. Ambiguous or missing links fail fast with a descriptive error.
 
-### 12.7 Library API
+### 13.7 Library API
 
 ```rust
 impl Database {
@@ -1193,7 +1193,7 @@ impl Database {
 
 `MigrationPlan` includes: current `format_version`, target `format_version`, ordered list of migration steps with category and estimated rewrite cost, whether a backup will be created, and whether unlock (passphrase / TPM) will be required.
 
-### 12.8 Key-management migrations
+### 13.8 Key-management migrations
 
 Key-management changes are **keyslot-metadata** migrations almost by construction, because the DEK/KEK split (§8) was designed so rotation rewrites the header, not the pages. Covered operations, all automatic-eligible:
 
@@ -1206,7 +1206,7 @@ Exceptions that are **not** automatic:
 - Full DEK rotation (§8.8) — crypto-structural, rewrites every page.
 - AAD composition change — crypto-structural.
 
-### 12.9 Schema migrations (Stage 5+)
+### 13.9 Schema migrations (Stage 5+)
 
 Format migrations (§13.1–8) change how bytes are laid out. Schema migrations change what the bytes *mean*. They are a separate, higher-layer concern and live in the query crate.
 
@@ -1227,7 +1227,7 @@ Rules inherited from §13.3:
 
 A system catalog page tracks applied schema migration ids (monotonic integers). Re-running is a no-op.
 
-### 12.10 CLI surface
+### 13.10 CLI surface
 
 Added in Stage 1 (even before any migrations exist), so the commands are muscle memory by the time they matter:
 
@@ -1240,7 +1240,7 @@ tosumu backup <path>                # explicit snapshot via copy-and-fsync
 tosumu verify <path>                # already defined §12.2; also checks version fields
 ```
 
-### 12.11 What this section does *not* promise
+### 13.11 What this section does *not* promise
 
 - No automatic **downgrade**. Ever. Downgrading is "use the backup."
 - No partial migration on open. Either the whole auto-eligible chain applies, or none of it does.
@@ -1881,3 +1881,4 @@ Argon2id { m: 64_000, t: 4, p: 2 }
 - Documented in README with "mobile" badge
 
 ---
+
