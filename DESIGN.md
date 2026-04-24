@@ -1380,9 +1380,39 @@ Interactive TUI viewer (§12.4). Can slot in any time after MVP+2, but most valu
 
 Minimal query layer. Proves the engine supports relational-style workloads.
 
-- Parser for `CREATE TABLE`, `INSERT`, `SELECT ... WHERE key = ?`.
-- System catalog page: `(rootpage, name)` entries per table.
-- Single-column primary key. No joins, no planner, no optimizer.
+**Pipeline:** SQL string → Lexer (tokens) → Parser (AST) → Semantic checker → Planner → Executor (calls `PageStore`)
+
+The executor already exists — Stage 5 builds only the front half of the pipeline. The AST is what decouples the SQL surface from the storage engine so the storage engine doesn't need to change when this stage lands.
+
+**AST node shapes** (reference: `DatabaseTools / SqliteSchemaBuilder.cs` for DDL node design):
+
+```rust
+enum Stmt {
+    CreateTable { name, columns: Vec<ColumnDef> },
+    Insert      { table, values: Vec<Expr> },
+    Select      { table, predicate: Option<Expr>, columns: Vec<String> },
+    Delete      { table, predicate: Option<Expr> },
+}
+
+enum Expr {
+    Literal(Value),
+    Column(String),
+    Eq(Box<Expr>, Box<Expr>),
+    Parameter(usize),   // for prepared statements: WHERE key = ?
+}
+```
+
+**Why the AST layer must not be skipped:**
+- **Validation before mutation** — reject invalid statements before any page is touched; no partial-execute-then-rollback for things that should never have started.
+- **Prepared statements** — parse once, bind values repeatedly. Without an AST, `?` parameters require re-parsing on every bind.
+- **Structural injection prevention** — parameter values are `Expr::Parameter` leaf nodes, never re-parsed as SQL grammar. Interpolated strings can't exist at the execution layer.
+- **Incremental optimization** — constant folding, predicate pushdown, projection pruning are each a tree-rewrite pass that can be added independently. Without an AST, any optimization requires rewriting the whole parser.
+
+**Deliverables:**
+- `tosumu-sql` crate: `Lexer`, `Parser`, `Ast`, `SemanticChecker`, `Planner`, `Executor`.
+- System catalog stored in a reserved page (page 1): `(rootpage: u64, table_name: &str)` per table.
+- Single-column primary key. No joins, no planner beyond point-lookup vs. full-scan choice.
+- Prepared statement API: `let stmt = db.prepare("SELECT * FROM t WHERE id = ?")?; stmt.bind(42)?.step()?`.
 - CLI: `tosumu sql <path> "SELECT * FROM users WHERE id = 42"`.
 
 **Proves:** the storage engine is a real foundation for query languages.
