@@ -49,6 +49,7 @@
 4. **No silent corruption.** Any integrity failure surfaces as a typed error. Never "just a weird byte."
 5. **Types over comments.** Layout is expressed in `#[repr(C)]` structs and enums, not prose.
 6. **Tests before cleverness.** Property tests and fuzzers land with the module they test.
+7. **Declarative intent, imperative mechanics.** Queries, migrations, validation, and provenance express *what* is intended — as plans, ASTs, and typed declarations. The storage engine, pager, and crypto layer express *how* — pages, fsyncs, and AEAD operations. These layers do not leak into each other. A page does not understand a query. A migration plan does not perform I/O. The line between them is the most important architectural boundary in the system.
 
 ---
 
