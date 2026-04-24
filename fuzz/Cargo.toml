@@ -4,6 +4,8 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[workspace]
+
 [package.metadata]
 cargo-fuzz = true
 
@@ -22,6 +24,12 @@ doc = false
 [[bin]]
 name = "fuzz_wal_replay"
 path = "fuzz_targets/fuzz_wal_replay.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_btree_crash_boundaries"
+path = "fuzz_targets/fuzz_btree_crash_boundaries.rs"
 test = false
 doc = false
 

@@ -1029,6 +1029,71 @@ mod tests {
         Ok(h)
     }
 
+    // ── Property tests ────────────────────────────────────────────────────────
+
+    use proptest::prelude::*;
+    use crate::wal::wal_path;
+
+    #[derive(Debug, Clone)]
+    enum Op {
+        Put(Vec<u8>, Vec<u8>),
+        Delete(Vec<u8>),
+    }
+
+    fn arb_key() -> impl Strategy<Value = Vec<u8>> {
+        // Narrow alphabet (0..16) forces frequent key reuse:
+        // overwrites, deletes of existing keys, and eventually splits.
+        prop::collection::vec(0u8..16, 1..=4)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn prop_btree_ops_invariants_always_hold(
+            ops in prop::collection::vec(
+                prop_oneof![
+                    (arb_key(), prop::collection::vec(any::<u8>(), 1..=16))
+                        .prop_map(|(k, v)| Op::Put(k, v)),
+                    arb_key().prop_map(Op::Delete),
+                ],
+                1..=150,
+            )
+        ) {
+            let p = tmp("proptest");
+            let wp = wal_path(&p);
+            let _ = std::fs::remove_file(&p);
+            let _ = std::fs::remove_file(&wp);
+            let mut t = BTree::create(&p).unwrap();
+            let mut model: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = Default::default();
+
+            for op in &ops {
+                match op {
+                    Op::Put(k, v) => {
+                        t.put(k, v).unwrap();
+                        model.insert(k.clone(), v.clone());
+                    }
+                    Op::Delete(k) => {
+                        t.delete(k).unwrap();
+                        model.remove(k);
+                    }
+                }
+                prop_assert!(
+                    t.check_invariants().is_ok(),
+                    "check_invariants failed after {:?}", op
+                );
+            }
+
+            // Final model comparison: scan_physical must match the BTreeMap reference.
+            let expected: Vec<_> = model.into_iter().collect();
+            let actual = t.scan_physical().unwrap();
+            prop_assert_eq!(actual, expected, "scan_physical must match BTreeMap model after all ops");
+
+            let _ = std::fs::remove_file(&p);
+            let _ = std::fs::remove_file(&wp);
+        }
+    }
+
     // ── check_invariants tests ────────────────────────────────────────────────
 
     #[test]

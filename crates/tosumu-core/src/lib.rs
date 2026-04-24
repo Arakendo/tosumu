@@ -13,5 +13,8 @@ pub mod log_store;
 pub mod inspect;
 pub mod wal;
 
+#[cfg(test)]
+pub(crate) mod test_helpers;
+
 /// Compile-time project name. Used by the CLI and by log output.
 pub const NAME: &str = "tosumu";
