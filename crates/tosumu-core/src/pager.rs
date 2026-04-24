@@ -16,6 +16,7 @@ use std::path::Path;
 use crate::crypto::{decrypt_page, encrypt_page, generate_dek, derive_subkeys};
 use crate::error::{Result, TosumError};
 use crate::format::*;
+use crate::wal::{WalRecord, WalWriter, wal_path};
 
 /// The pager. Holds an open file and the derived page key.
 pub struct Pager {
@@ -26,6 +27,18 @@ pub struct Pager {
     freelist_head: u64,
     /// B+ tree root page number (0 = not yet set). Persisted at OFF_ROOT_PAGE.
     root_page: u64,
+    // ── WAL / transaction state ───────────────────────────────────────────
+    /// WAL writer, open for the lifetime of this Pager.
+    wal: Option<WalWriter>,
+    /// Whether a transaction is currently active.
+    txn_active: bool,
+    /// txn_id of the current open transaction.
+    txn_id: u64,
+    /// Counter for generating unique txn_ids.
+    next_txn_id: u64,
+    /// Dirty page frames buffered during the current transaction.
+    /// Entries are (pgno, encrypted_frame). Latest write wins for the same pgno.
+    dirty_pages: Vec<(u64, Box<[u8; PAGE_SIZE]>)>,
 }
 
 impl Pager {
@@ -52,12 +65,20 @@ impl Pager {
         file.write_all(&page0)?;
         file.sync_data()?;
 
+        // Open/create WAL sidecar.
+        let wal = WalWriter::open_or_create(&wal_path(path)).ok();
+
         Ok(Pager {
             file,
             page_key,
             page_count: 1,
             freelist_head: 0,
             root_page: 0,
+            wal,
+            txn_active: false,
+            txn_id: 0,
+            next_txn_id: 1,
+            dirty_pages: Vec::new(),
         })
     }
 
@@ -108,7 +129,27 @@ impl Pager {
         let freelist_head = read_u64(&page0, OFF_FREELIST_HEAD);
         let root_page = read_u64(&page0, OFF_ROOT_PAGE);
 
-        Ok(Pager { file, page_key, page_count, freelist_head, root_page })
+        // Recover from WAL before returning to caller.
+        let wp = wal_path(path);
+        if wp.exists() {
+            crate::wal::recover(path, &wp)?;
+        }
+
+        // Open/create WAL sidecar for future writes.
+        let wal = WalWriter::open_or_create(&wp).ok();
+
+        Ok(Pager {
+            file,
+            page_key,
+            page_count,
+            freelist_head,
+            root_page,
+            wal,
+            txn_active: false,
+            txn_id: 0,
+            next_txn_id: 1,
+            dirty_pages: Vec::new(),
+        })
     }
 
     // ── Page access ──────────────────────────────────────────────────────────
@@ -136,20 +177,53 @@ impl Pager {
 
     /// Read-write access to page `pgno`. Closure receives a mutable plaintext
     /// buffer; on return the page is re-encrypted with a new nonce and
-    /// incremented page_version, and written back.
+    /// incremented page_version.
+    ///
+    /// - Outside a transaction: writes directly to `.tsm` (auto-commit, for
+    ///   internal ops like `init_page` and header flushes).
+    /// - Inside a transaction (`begin_txn` called): buffers the encrypted frame
+    ///   in memory and appends a `PageWrite` to the WAL; `.tsm` is not touched
+    ///   until `commit_txn` flushes the dirty pages.
     pub fn with_page_mut<F>(&mut self, pgno: u64, f: F) -> Result<()>
     where
         F: FnOnce(&mut [u8; PAGE_PLAINTEXT_SIZE]) -> Result<()>,
     {
         assert!(pgno != 0, "pgno 0 is the file header, not an encrypted page");
 
-        let frame = self.read_frame(pgno)?;
+        // For reads: check dirty buffer first (read-your-own-writes).
+        let frame = if let Some(pos) = self.dirty_pages.iter().rposition(|(p, _)| *p == pgno) {
+            *self.dirty_pages[pos].1.clone()
+        } else {
+            self.read_frame(pgno)?
+        };
+
         let (mut plaintext, version) = decrypt_page(&self.page_key, pgno, &frame)?;
 
         f(&mut plaintext)?;
 
         let new_frame = encrypt_page(&self.page_key, pgno, version + 1, &plaintext)?;
-        self.write_frame(pgno, &new_frame)?;
+
+        if self.txn_active {
+            // WAL path: buffer the frame, append PageWrite.
+            let txn_id = self.txn_id;
+            if let Some(ref mut wal) = self.wal {
+                wal.append(&WalRecord::PageWrite {
+                    pgno,
+                    page_version: version + 1,
+                    frame: Box::new(new_frame),
+                })?;
+            }
+            // Update dirty buffer (replace existing entry for same pgno).
+            if let Some(pos) = self.dirty_pages.iter().position(|(p, _)| *p == pgno) {
+                self.dirty_pages[pos].1 = Box::new(new_frame);
+            } else {
+                self.dirty_pages.push((pgno, Box::new(new_frame)));
+            }
+            let _ = txn_id; // used via self.txn_id above
+        } else {
+            // Auto-commit path: write directly to .tsm.
+            self.write_frame(pgno, &new_frame)?;
+        }
         Ok(())
     }
 
@@ -181,6 +255,42 @@ impl Pager {
 
     pub fn page_count(&self) -> u64 {
         self.page_count
+    }
+
+    // ── Transaction API ───────────────────────────────────────────────────────
+
+    /// Begin a write transaction. Must not be called while one is already open.
+    pub fn begin_txn(&mut self) -> Result<()> {
+        assert!(!self.txn_active, "nested transactions are not supported");
+        self.txn_id = self.next_txn_id;
+        self.next_txn_id += 1;
+        self.txn_active = true;
+        if let Some(ref mut wal) = self.wal {
+            wal.append(&WalRecord::Begin { txn_id: self.txn_id })?;
+        }
+        Ok(())
+    }
+
+    /// Commit the current transaction: write Commit record, fsync WAL, flush dirty pages to .tsm.
+    pub fn commit_txn(&mut self) -> Result<()> {
+        assert!(self.txn_active, "commit_txn called with no active transaction");
+        if let Some(ref mut wal) = self.wal {
+            wal.append(&WalRecord::Commit { txn_id: self.txn_id })?;
+            wal.sync()?;
+        }
+        // Flush dirty pages to .tsm.
+        let pages: Vec<(u64, Box<[u8; PAGE_SIZE]>)> = self.dirty_pages.drain(..).collect();
+        for (pgno, frame) in pages {
+            self.write_frame(pgno, &frame)?;
+        }
+        self.txn_active = false;
+        Ok(())
+    }
+
+    /// Roll back the current transaction: discard dirty pages (no commit in WAL).
+    pub fn rollback_txn(&mut self) {
+        self.dirty_pages.clear();
+        self.txn_active = false;
     }
 
     /// Return the B+ tree root page number (0 if not yet set).
@@ -216,6 +326,11 @@ impl Pager {
     }
 
     // ── private ──────────────────────────────────────────────────────────────
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn read_raw_frame(&self, pgno: u64) -> Result<[u8; PAGE_SIZE]> {
+        self.read_frame(pgno)
+    }
 
     fn read_frame(&self, pgno: u64) -> Result<[u8; PAGE_SIZE]> {
         let mut frame = [0u8; PAGE_SIZE];

@@ -65,6 +65,13 @@ enum Command {
         #[arg(long)]
         explain: bool,
     },
+    /// Copy a database file (and its WAL sidecar if present) to a destination.
+    Backup {
+        /// Source database path.
+        src: PathBuf,
+        /// Destination path for the backup copy.
+        dest: PathBuf,
+    },
 }
 
 fn main() {
@@ -116,6 +123,7 @@ fn run(cli: Cli) -> Result<(), tosumu_core::error::TosumError> {
         Command::Dump { path, page } => cmd_dump(&path, page)?,
         Command::Hex  { path, page } => cmd_hex(&path, page)?,
         Command::Verify { path, explain } => cmd_verify(&path, explain)?,
+        Command::Backup { src, dest } => cmd_backup(&src, &dest)?,
     }
     Ok(())
 }
@@ -275,6 +283,30 @@ fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Resu
                 report.pages_ok, report.pages_checked, report.issues.len());
         }
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+// ── backup ───────────────────────────────────────────────────────────────────
+
+fn cmd_backup(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+) -> tosumu_core::error::Result<()> {
+    use tosumu_core::wal::wal_path;
+    use tosumu_core::error::TosumError;
+
+    std::fs::copy(src, dest)
+        .map_err(|e| TosumError::Io(e))?;
+    println!("backed up {} → {}", src.display(), dest.display());
+
+    // Copy WAL sidecar if it exists.
+    let src_wal = wal_path(src);
+    if src_wal.exists() {
+        let dest_wal = wal_path(dest);
+        std::fs::copy(&src_wal, &dest_wal)
+            .map_err(|e| TosumError::Io(e))?;
+        println!("backed up {} → {}", src_wal.display(), dest_wal.display());
     }
     Ok(())
 }

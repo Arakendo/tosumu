@@ -81,6 +81,33 @@ impl PageStore {
             tree_height: self.tree.tree_height().unwrap_or(0),
         }
     }
+
+    /// Execute a write transaction atomically.
+    ///
+    /// The closure receives `&mut PageStore`. All `put` / `delete` calls inside
+    /// the closure are buffered and written to the WAL. On `Ok(())` the
+    /// transaction is committed (WAL fsynced, dirty pages flushed to `.tsm`).
+    /// On `Err(_)` the transaction is rolled back (dirty pages discarded).
+    ///
+    /// Commit semantics: if the process crashes after `commit_txn` returns but
+    /// before the dirty-page flush completes, recovery will replay the WAL on
+    /// next open and restore the committed state.
+    pub fn transaction<F, T>(&mut self, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut PageStore) -> Result<T>,
+    {
+        self.tree.begin_txn()?;
+        match f(self) {
+            Ok(v) => {
+                self.tree.commit_txn()?;
+                Ok(v)
+            }
+            Err(e) => {
+                self.tree.rollback_txn();
+                Err(e)
+            }
+        }
+    }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -217,6 +244,50 @@ mod tests {
         assert!(matches!(err, crate::error::TosumError::AuthFailed { .. }));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn transaction_commit_visible_after_reopen() {
+        let path = temp_path("txn_commit");
+        let _ = std::fs::remove_file(&path);
+        // Remove the WAL sidecar too.
+        let wal = std::path::PathBuf::from(format!("{}.wal", path.display()));
+        let _ = std::fs::remove_file(&wal);
+
+        {
+            let mut store = PageStore::create(&path).unwrap();
+            store.transaction(|tx| {
+                tx.put(b"a", b"1")?;
+                tx.put(b"b", b"2")?;
+                Ok(())
+            }).unwrap();
+        }
+
+        let store = PageStore::open(&path).unwrap();
+        assert_eq!(store.get(b"a").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(store.get(b"b").unwrap(), Some(b"2".to_vec()));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    #[test]
+    fn transaction_rollback_leaves_no_data() {
+        let path = temp_path("txn_rollback");
+        let _ = std::fs::remove_file(&path);
+        let wal = std::path::PathBuf::from(format!("{}.wal", path.display()));
+        let _ = std::fs::remove_file(&wal);
+
+        let mut store = PageStore::create(&path).unwrap();
+        let result: Result<()> = store.transaction(|tx| {
+            tx.put(b"x", b"lost")?;
+            Err(crate::error::TosumError::InvalidArgument("deliberate rollback"))
+        });
+        assert!(result.is_err());
+        assert_eq!(store.get(b"x").unwrap(), None, "rolled-back write must not be visible");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
     }
 
     #[test]

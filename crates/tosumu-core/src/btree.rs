@@ -57,7 +57,7 @@ const INTERNAL_RECORD_OVERHEAD: usize = 10;
 
 /// B+ tree stored in a tosumu pager file.
 pub struct BTree {
-    pager: Pager,
+    pub(crate) pager: Pager,
 }
 
 impl BTree {
@@ -242,6 +242,15 @@ impl BTree {
 
     /// Return the root page number.
     pub fn root_page(&self) -> u64 { self.pager.root_page() }
+
+    /// Begin a write transaction on the underlying pager.
+    pub(crate) fn begin_txn(&mut self) -> Result<()> { self.pager.begin_txn() }
+
+    /// Commit the current transaction (fsync WAL + flush dirty pages to .tsm).
+    pub(crate) fn commit_txn(&mut self) -> Result<()> { self.pager.commit_txn() }
+
+    /// Roll back the current transaction (discard dirty pages).
+    pub(crate) fn rollback_txn(&mut self) { self.pager.rollback_txn() }
 
     /// Walk from the root to the leftmost leaf and return the height (1 = single leaf).
     pub fn tree_height(&self) -> Result<usize> {
