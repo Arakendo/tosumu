@@ -1797,6 +1797,117 @@ Trying to be all of those would make it none of them.
 
 The right architecture for a real system is: **tosumu stores records, specialized engines index them**. Keep the separation of concerns clean.
 
+### 18.6 Stage 5+ query layer design notes
+
+These are design constraints for the eventual `tosumu-query` crate, captured here so they don't get rediscovered the hard way.
+
+**The core query primitive is a `RowSet`.**
+
+Indexes don't return rows directly — they return sets of row identifiers. Query operations are then set operations:
+
+| Query construct | Set operation |
+|-----------------|---------------|
+| `AND` | intersection |
+| `OR` | union |
+| `NOT` | difference |
+| `JOIN` | indexed nested-loop lookup |
+| `UNION` | merge (if both streams sorted) or materialize + dedupe |
+| `INTERSECT` | intersection |
+| `EXCEPT` | difference |
+
+A `RowSet` can be a sorted iterator, a temporary materialized list, or (eventually) a bitmap. The query layer composes them; the storage layer knows nothing about them.
+
+**ASTs describe intent. Plans describe execution.**
+
+There is a mandatory translation step:
+
+```
+query AST (what the user wrote)
+     ↓
+plan tree (what the engine will do)
+     ↓
+execution (set operations against RowSets)
+```
+
+Example: `WHERE (status = 'open' OR priority = 'high') AND customer_id = 42`
+
+```
+intersect(
+  union(
+    index_scan(status_idx, 'open'),
+    index_scan(priority_idx, 'high')
+  ),
+  index_scan(customer_idx, 42)
+)
+```
+
+The plan tree is a first-class value — it can be inspected, explained, and logged before execution begins.
+
+**OR rewrites to union of index scans when possible.**
+
+A naive OR triggers a full table scan. A smart OR triggers two index scans + a RowSet union. The query planner should detect when all OR terms have covering indexes and rewrite accordingly. If only some terms are indexed, the planner chooses full scan and emits an explain warning — it does not silently degrade.
+
+**Joins are index-driven or explicit.**
+
+For Stage 5, only two join strategies are supported:
+
+1. **PK lookup join:** For each row in the outer table, look up the inner table by primary key. Requires the join column to be the inner table's PK.
+2. **FK index join:** For each outer PK, range-scan the hidden FK index (`_fkidx:table:column:{val}:*`). Requires a hidden FK index to exist.
+
+Any other join pattern is rejected with an explicit error — not silently degraded to a nested-loop full scan.
+
+**Hidden FK indexes serve double duty.**
+
+An FK constraint (`orders.customer_id → customers.id`) auto-creates:
+
+```
+_fkidx:orders:customer_id:{customer_id}:{order_id}  →  ∅
+```
+
+This index is used both for FK enforcement (delete customer → range scan for referencing rows) and for join execution (join customers ↔ orders on customer_id → range scan FK index). Two birds, one index.
+
+**Expensive operations explain themselves and degrade predictably.**
+
+When the planner cannot use indexes, it says so:
+
+```
+Warning: OR condition cannot use indexes.
+  notes CONTAINS "urgent" has no index.
+
+Plan will scan 42,318 rows.
+Consider: CREATE INDEX notes_text ON orders(notes).
+```
+
+This fits guiding principle 7 (declarative intent, imperative mechanics): the plan describes what will happen before it happens. Surprises are for production incidents, not query plans.
+
+**Implementation order for Stage 5+:**
+
+1. PK point lookup
+2. Secondary index point lookup
+3. `AND` as RowSet intersection over indexed columns
+4. `OR` as RowSet union over indexed columns (with full-scan fallback + warning)
+5. Simple nested-loop join over PK or FK index
+6. `UNION` via sorted RowSet merge
+7. `EXPLAIN` output (plan tree → human-readable text)
+8. Query statistics (row counts, cardinality estimates) — only after 1–7 work
+
+Do not start with arbitrary joins, subqueries, or aggregates.
+
+**The stupid-but-safe planning rule:**
+
+```
+If indexed equality available   → use index
+Otherwise                       → scan + emit warning
+
+If all OR terms indexed          → union of index scans
+If any OR term unindexed        → full scan + emit warning
+
+If join has indexed inner side  → nested-loop index join
+Otherwise                       → reject with descriptive error
+```
+
+"Reject with descriptive error" is better than "silently do something terrible." Mature systems know what they cannot do.
+
 ---
 
 ## 19. Platform support and mobile deployment
