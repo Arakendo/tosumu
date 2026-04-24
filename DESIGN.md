@@ -3149,3 +3149,255 @@ Same data model. Same semantics. Different deployment. No surprise behavior when
 The correct pattern for multi-client network database access is **embedded core + explicit server wrapper**, not "make the filesystem work harder." Tosumu-server is that wrapper — minimal, explicit, and built directly on the same concurrency model as the embedded engine rather than layered on top of different assumptions.
 
 ---
+
+## 23. Auditability, witnesses, and health detection (Stage 7+)
+
+AEAD proves page authenticity. It does not prove recency. A rolled-back database — one silently restored from a stale backup, or one whose WAL was truncated — will return authentic pages for a state that is no longer current. The database will appear healthy to any check that only looks inward.
+
+Auditability makes disagreement detectable from the outside.
+
+> Tosumu's audit layer exists to detect disagreement between the database's current state and independently observed prior state. AEAD proves page authenticity; witnesses and observers provide freshness anchors.
+
+This section describes three interlocking mechanisms: a hash-chained audit log (§23.1–§23.3), an external witness model for multi-server deployments (§23.4–§23.5), and a local observer model for single-server deployments (§23.6–§23.7). All three produce the same thing: an external vantage point that can say "the database claims to be at state X, but I last saw state Y."
+
+### 23.1 WAL vs. audit log
+
+These are different tools for different questions.
+
+| | WAL | Audit log |
+|---|---|---|
+| **Question answered** | How do we recover storage state? | What happened, who/what caused it, does the sequence make sense? |
+| **Primary consumer** | Recovery path, checkpoint | Operator, observer, external verifier |
+| **Mutable after write?** | Yes, checkpointed away | No, hash-chained |
+| **Contains** | Page images | Event records |
+| **Covers** | Page writes only | All significant lifecycle events |
+
+The WAL is internal storage infrastructure. The audit log is externally verifiable evidence. They are stored separately. Neither replaces the other.
+
+### 23.2 Audit event types
+
+```
+DatabaseOpened
+DatabaseClosed
+TransactionStarted
+TransactionCommitted
+TransactionRolledBack
+PageWritten
+CheckpointStarted
+CheckpointCompleted
+VerificationRun
+AuthFailureDetected
+RollbackSuspected
+NetworkModeWarning
+ProtectorUsed
+MigrationApplied
+ObserverConnected
+ObserverDisconnected
+WitnessReceiptIssued
+```
+
+Events are append-only. There is no delete.
+
+### 23.3 Hash-chained event structure
+
+Each event record:
+
+```
+event_id          u64      monotonic, per-database
+timestamp         i64      Unix nanoseconds (wall clock; not trusted alone)
+event_type        u16      enum discriminant
+session_id        u64      from §7.7 connection_info
+process_id        u32
+host_id           [u8; 8]  first 8 bytes of hostname hash
+lsn               u64      database LSN at time of event
+previous_hash     [u8; 32] hash of previous event record
+event_hash        [u8; 32] H(all fields above including previous_hash)
+```
+
+Chain integrity:
+
+```
+event[n].event_hash = H(event[n].fields ++ event[n-1].event_hash)
+```
+
+The genesis event (event 0) sets `previous_hash` to all zeros.
+
+If any event is deleted, reordered, or modified, every subsequent `event_hash` value is invalidated. Verification is O(n) in the number of events.
+
+**What the chain proves and does not prove:**
+
+The chain proves the sequence is internally consistent and unmodified since it was written. It does not prove that the events it describes are true — a compromised process could write a valid chain of false events. The chain's value comes from comparing it against independent external observations (§23.4, §23.6).
+
+### 23.4 Three-server witness model
+
+This is not a distributed database. Do not accidentally build Raft in a bathrobe.
+
+Three servers act as **witnesses and auditors**, not as writable replicas. Writes still go to exactly one primary. Witnesses hold signed freshness receipts.
+
+```
+tosumu-primary
+tosumu-witness-1
+tosumu-witness-2
+```
+
+After each committed transaction, the primary broadcasts a **witness receipt**:
+
+```
+db_id             [u8; 16]   stable database identity (set at init)
+lsn               u64        LSN just committed
+manifest_hash     [u8; 32]   hash of page 0 + keyslot region
+audit_head        [u8; 32]   event_hash of the most recent audit event
+observed_at       i64        Unix nanoseconds
+```
+
+Witnesses store and sign these receipts. They do not validate them against each other in real time — they only store what the primary reported. Disagreement is detected by a **reconciliation check**, either scheduled or on-open.
+
+**Rollback detection:**
+
+```
+primary reports   LSN = 1040
+witness-1 last saw LSN = 1092
+witness-2 last saw LSN = 1092
+→ primary is sick / rolled back / restored from stale backup
+```
+
+**What the witness model detects:**
+
+- Database rolled back to older LSN
+- Stale backup silently restored in place
+- Audit chain truncated (audit_head no longer matches the receipt chain)
+- Missing witness receipts for an LSN range
+- Node disagreement between witnesses
+
+**What it does not automatically solve:**
+
+- Multi-writer consensus
+- Automatic failover
+- Conflict resolution
+
+Those are distributed database problems. Do not acquire them yet.
+
+### 23.5 Witness receipt storage
+
+Receipts are stored in a sidecar file (`tosumu.witness`) or in the witness process's own database. The primary is responsible for broadcasting; witnesses are responsible for storing. If a witness misses a receipt, it records the gap; gaps are distinct from disagreement.
+
+On reconnect, witnesses can request a batch of receipts for an LSN range from the primary. This handles temporary disconnection without treating it as an attack.
+
+### 23.6 Single-server observer model
+
+When a three-server deployment is not warranted, the same freshness-anchor guarantee can be approximated locally. The main database process spawns one or more adjacent **observer processes** that communicate via IPC.
+
+```
+tosumu-server        main database process
+tosumu-observer-a    adjacent observer
+tosumu-observer-b    adjacent observer
+```
+
+IPC transport: Unix socket (Linux/macOS) or named pipe (Windows). Observers do not write the database. They watch, record, and verify.
+
+Each observer tracks:
+
+```
+last_seen_lsn         u64
+last_seen_audit_head  [u8; 32]
+last_seen_manifest    [u8; 32]
+last_heartbeat        i64        Unix nanoseconds
+process_identity      u32        PID of the main process
+file_mtime            i64        observed mtime of tosumu.db
+file_size             u64        observed byte size
+last_verify_result    HealthStatus
+```
+
+On every heartbeat (configurable, default 10 seconds), the main process sends a short report to each observer. Observers store it locally, reply with acknowledgment, and record a last-seen timestamp.
+
+**Rollback detection (local):**
+
+```
+main process reports   current LSN = 900
+observer-a last saw    LSN = 950
+→ main database is sick or rolled back
+```
+
+**Observer sickness detection:**
+
+```
+observer-a reports   LSN = 950
+observer-b reports   LSN = 1001
+→ observer-a is sick, stale, or partitioned
+```
+
+The local mini-quorum is not a consensus protocol. It is a simple comparison: do the observers agree with each other and with the main process? If not, surface the disagreement explicitly and refuse further writes until an operator makes a decision.
+
+### 23.7 Observer failure modes
+
+Observers fail in two distinct ways:
+
+**Observer is sick** — the observer process has crashed, lost its state, or is returning garbage. The main process detects this by missed heartbeats or by receiving a report that contradicts the other observers. Response: log the failure, continue operations, alert the operator. A sick observer is not the same as a sick database.
+
+**Main process is sick** — the main process reports an LSN lower than the observer last saw. The database may have been rolled back. Response: refuse writes, transition to `RollbackSuspected`, wait for operator confirmation before accepting any further transactions.
+
+The two cases have different recovery paths and must not be conflated.
+
+### 23.8 Health status model
+
+Database health is an explicit enum, not an implicit "no errors seen recently."
+
+```rust
+enum HealthStatus {
+    Healthy,
+    Degraded,              // non-critical warning; writes allowed
+    ObserverDisagrees,     // observer LSN mismatch; writes allowed with warning
+    RollbackSuspected,     // LSN went backward; writes refused
+    AuditChainBroken,      // hash chain verification failed
+    ManifestMismatch,      // page 0 / keyslot hash disagrees with witness
+    AuthFailureDetected,   // AEAD tag verification failed on a page
+    CheckpointStalled,     // WAL not checkpointing; growing unbounded
+    Unknown,               // health cannot be determined
+}
+```
+
+Status transitions are driven by observed events, not by timers. `Healthy` requires positive evidence; absence of failure is not positive evidence.
+
+Diagnostics for `RollbackSuspected`:
+
+```
+Status: RollbackSuspected
+Reason:
+  local DB header LSN:  882
+  observer-a last seen: 914
+  observer-b last seen: 914
+Action:
+  writes refused until operator confirms recovery path
+  run: tosumu-cli verify --full
+  run: tosumu-cli audit tail --n 50
+```
+
+`Unknown` is the initial state before any checks have run. The system should reach a known state within seconds of opening.
+
+### 23.9 Crate structure expansion
+
+The full crate map once the audit and observer layers exist:
+
+```
+tosumu-core       local storage engine (no network, no IPC)
+tosumu-cli        inspect / verify / migrate / audit / dump
+tosumu-server     network wrapper (multi-client access)
+tosumu-client     optional HTTP/gRPC client SDK
+tosumu-audit      hash-chained event log + manifest management
+tosumu-witness    external freshness receipts (three-server model)
+tosumu-observer   local IPC health observers (single-server model)
+```
+
+Dependency rules mirror the existing layer invariant (§4): `tosumu-core` has no dependency on any of the others. `tosumu-audit` depends on `tosumu-core` (reads LSN and manifest) but not on `tosumu-server`. `tosumu-witness` and `tosumu-observer` depend on `tosumu-audit` for the event chain; neither depends on each other.
+
+### 23.10 Design principle
+
+The fundamental distinction this section is built around:
+
+> AEAD proves a page is real. Witnesses and observers prove a page is current.
+
+Any system that only checks AEAD can be fooled by a faithful reproduction of an older state. Any system that also checks independent observers cannot be fooled without compromising those observers too — and compromising them leaves its own evidence.
+
+The goal is not to make attacks impossible. It is to make attacks visible.
+
+---
