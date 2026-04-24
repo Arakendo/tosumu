@@ -30,6 +30,7 @@
 - High performance. We will measure it, but we will not chase it.
 - Portability exotica. Little-endian, 64-bit, POSIX-or-Windows file semantics.
 - Advanced indexing (FSTs, full-text search, vector/embedding search, fuzzy matching). See §18 for why these are out of scope and how to use specialized tools if you need them.
+- **Becoming a relational database.** Tosumu is a KV store with an optional relational layer — not a relational database with a KV implementation detail. PK/FK constraints, row encoding, and schema validation live above `tosumu-core` in separate crates (`tosumu-table`, `tosumu-constraints`). The pager never learns what a "customer" is.
 
 ### 1.3 Explicit "out of scope until proven necessary"
 
