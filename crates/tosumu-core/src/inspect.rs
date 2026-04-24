@@ -192,11 +192,23 @@ pub struct VerifyIssue {
     pub description: String,
 }
 
+/// Per-page result across the three epistemic dimensions (§29.2).
+pub struct PageVerifyResult {
+    pub pgno: u64,
+    /// `Some(v)` when AEAD passed, `None` when it failed.
+    pub page_version: Option<u64>,
+    pub auth_ok: bool,
+    /// Human-readable description of any failure, or `None` when clean.
+    pub issue: Option<String>,
+}
+
 /// Summary returned by `verify_file`.
 pub struct VerifyReport {
     pub pages_checked: u64,
     pub pages_ok: u64,
     pub issues: Vec<VerifyIssue>,
+    /// Per-page detail, always populated (used by `--explain`).
+    pub page_results: Vec<PageVerifyResult>,
 }
 
 /// Open `path` and authenticate every data page (1..page_count).
@@ -209,27 +221,54 @@ pub fn verify_file(path: &Path) -> Result<VerifyReport> {
     let page_count = pager.page_count();
     let pages_to_check = page_count.saturating_sub(1); // skip page 0
 
-    let mut pages_ok = 0u64;
-    let mut issues   = Vec::new();
+    let mut pages_ok    = 0u64;
+    let mut issues      = Vec::new();
+    let mut page_results = Vec::with_capacity(pages_to_check as usize);
 
     for pgno in 1..page_count {
-        match pager.with_page(pgno, |_| Ok(())) {
-            Ok(()) => pages_ok += 1,
-            Err(TosumError::AuthFailed { .. }) => issues.push(VerifyIssue {
-                pgno,
-                description: "authentication tag mismatch (page corrupted or tampered)"
-                    .to_owned(),
-            }),
-            Err(TosumError::Corrupt { reason, .. }) => issues.push(VerifyIssue {
-                pgno,
-                description: format!("corrupt: {reason}"),
-            }),
-            Err(e) => issues.push(VerifyIssue {
-                pgno,
-                description: format!("I/O error: {e}"),
-            }),
+        match pager.read_page(pgno) {
+            Ok((_, version)) => {
+                pages_ok += 1;
+                page_results.push(PageVerifyResult {
+                    pgno,
+                    page_version: Some(version),
+                    auth_ok: true,
+                    issue: None,
+                });
+            }
+            Err(TosumError::AuthFailed { .. }) => {
+                let desc = "authentication tag mismatch (page corrupted or tampered)"
+                    .to_owned();
+                issues.push(VerifyIssue { pgno, description: desc.clone() });
+                page_results.push(PageVerifyResult {
+                    pgno,
+                    page_version: None,
+                    auth_ok: false,
+                    issue: Some(desc),
+                });
+            }
+            Err(TosumError::Corrupt { reason, .. }) => {
+                let desc = format!("corrupt: {reason}");
+                issues.push(VerifyIssue { pgno, description: desc.clone() });
+                page_results.push(PageVerifyResult {
+                    pgno,
+                    page_version: None,
+                    auth_ok: false,
+                    issue: Some(desc),
+                });
+            }
+            Err(e) => {
+                let desc = format!("I/O error: {e}");
+                issues.push(VerifyIssue { pgno, description: desc.clone() });
+                page_results.push(PageVerifyResult {
+                    pgno,
+                    page_version: None,
+                    auth_ok: false,
+                    issue: Some(desc),
+                });
+            }
         }
     }
 
-    Ok(VerifyReport { pages_checked: pages_to_check, pages_ok, issues })
+    Ok(VerifyReport { pages_checked: pages_to_check, pages_ok, issues, page_results })
 }

@@ -61,6 +61,9 @@ enum Command {
     /// Authenticate every data page and report any integrity failures.
     Verify {
         path: PathBuf,
+        /// Show per-page integrity / freshness / epistemic status.
+        #[arg(long)]
+        explain: bool,
     },
 }
 
@@ -111,7 +114,7 @@ fn run(cli: Cli) -> Result<(), tosumu_core::error::TosumError> {
         }
         Command::Dump { path, page } => cmd_dump(&path, page)?,
         Command::Hex  { path, page } => cmd_hex(&path, page)?,
-        Command::Verify { path }     => cmd_verify(&path)?,
+        Command::Verify { path, explain } => cmd_verify(&path, explain)?,
     }
     Ok(())
 }
@@ -228,21 +231,48 @@ fn cmd_hex(path: &std::path::Path, pgno: u64) -> tosumu_core::error::Result<()> 
 
 // ── verify ────────────────────────────────────────────────────────────────────
 
-fn cmd_verify(path: &std::path::Path) -> tosumu_core::error::Result<()> {
+fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Result<()> {
     use tosumu_core::inspect::verify_file;
 
     let report = verify_file(path)?;
     println!("verifying {} ({} data pages) ...", path.display(), report.pages_checked);
 
-    for issue in &report.issues {
-        eprintln!("  page {} ... FAILED: {}", issue.pgno, issue.description);
+    if explain {
+        // Per-page breakdown across the three epistemic dimensions (DESIGN.md §29.2).
+        println!();
+        for r in &report.page_results {
+            println!("page {}:", r.pgno);
+            if r.auth_ok {
+                let ver = r.page_version.unwrap_or(0);
+                println!("  integrity:   OK     — AEAD tag verified (page_version {ver})");
+                println!("  freshness:   unanchored — LSN witness not configured (§23, Stage 6)");
+                println!("  epistemic:   OK     — no overclaiming");
+            } else {
+                let reason = r.issue.as_deref().unwrap_or("unknown");
+                println!("  integrity:   FAIL   — {reason}");
+                println!("  freshness:   N/A");
+                println!("  epistemic:   FAIL   — cannot verify page {} is what was written",
+                    r.pgno);
+            }
+            println!();
+        }
+    } else {
+        for issue in &report.issues {
+            eprintln!("  page {} ... FAILED: {}", issue.pgno, issue.description);
+        }
     }
 
     if report.issues.is_empty() {
         println!("all pages ok: {}/{}", report.pages_ok, report.pages_checked);
     } else {
-        eprintln!("FAILED: {}/{} pages ok, {} issue(s)",
-            report.pages_ok, report.pages_checked, report.issues.len());
+        if !explain {
+            // issues were already printed above in the explain branch
+            eprintln!("FAILED: {}/{} pages ok, {} issue(s)",
+                report.pages_ok, report.pages_checked, report.issues.len());
+        } else {
+            println!("FAILED: {}/{} pages ok, {} issue(s)",
+                report.pages_ok, report.pages_checked, report.issues.len());
+        }
         std::process::exit(1);
     }
     Ok(())

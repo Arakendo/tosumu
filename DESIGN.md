@@ -1904,6 +1904,29 @@ Conventions:
 - Default file extension: `.tsm` (short) or `.tosumu` (explicit). `.tsm` for CLI examples.
 - Pronunciation: *TOH-soo-moo*.
 
+### 17.1 Tofeka and epistemic boundary
+
+Two related terms from the same language appear throughout the design and inform how Tosumu classifies state validity:
+
+| Written | Parse | Meaning | Application |
+|---|---|---|---|
+| `tofe` | `to-fe` | epistemic boundary — the line where evidence meets claim | The pager boundary (§4) is a structural `tofe` |
+| `tofeka` | `to-fe-ka` | epistemic boundary crossing by **intentional action** — deliberate misrepresentation | The failure mode being prevented |
+| `tofeki` | `to-fe-ki` | epistemic boundary crossing by **passive change** — accidental overclaiming | A correctable error; lower stakes |
+
+In the Tonesu system, `fe` is the root for physical limits, danger thresholds, and category edges. A false knowledge claim and a structural-engineering failure are the same kind of event: a boundary was violated.
+
+**Tosumu's design goal, restated in these terms:** make `tofeka` structurally impossible at each layer, and make `tofeki` immediately detectable.
+
+- AEAD prevents claiming a page is authentic without verifiable proof (`si → to` gate cannot be skipped).
+- The WAL and fsync discipline prevents claiming a write is durable without an OS contract (`to → tosu` gate).
+- The witness model (§23) prevents claiming state is current without an external anchor.
+- `#[forbid(unsafe_code)]` prevents claiming the memory model is safe without compiler verification.
+
+Each of these is not a warning in documentation — it is a structural constraint. The goal is to make the dangerous claim unrepresentable, not to advise against it. This is §2 principle 8 expressed in Tonesu terms.
+
+**Implementation note.** Do not use `tofeka` as a variant name, type name, or error identifier in code. Future maintainers should not need to learn the conlang. Use `AuthFailed`, `FreshnessViolation`, `StateInconsistency` in code. Use the tofeka vocabulary to *design* the system and *discuss* it; use English to *implement* it. See §29 for the full epistemic model this vocabulary names.
+
 ---
 
 ## 18. Advanced indexing and future directions
@@ -4316,5 +4339,89 @@ The equivalent pattern for `ReadTransaction` uses a shared reference, not a muta
 ### 28.10 Design principle
 
 > Rust's type system, ownership model, and trait system are not constraints to work around. They are the primary implementation of the §2 principle "structural impossibility over advisory rules." Every place where a safety property is enforced by the compiler is one fewer place where a test, a lint, or a code review needs to catch it.
+
+---
+
+## 29. Epistemic integrity model
+
+This section formalizes the model that underlies Tosumu's approach to correctness. The vocabulary comes from §17.1. The content is not philosophy — it is a design framework that makes the audit system (§23), the pager trust boundary (§4), and the `tosumu verify --explain` command (§29.4) legible as a coherent whole rather than three independent features.
+
+### 29.1 The epistemic pipeline
+
+The Tonesu epistemic stages from §17 map directly onto Tosumu's storage stack:
+
+| Tonesu stage | Storage equivalent | Description |
+|---|---|---|
+| `se` | Raw disk frame | Bytes on disk. Untrusted, uninterpreted. The adversarial zone. |
+| `si` | Decoded page | Structure parsed. AEAD not yet checked. Not yet knowledge. |
+| `to` | Verified page | AEAD passed. Authentically the page we wrote. |
+| `tosu` | Consistent database | All pages verified, WAL applied, LSN/witness chain intact. Established state. |
+
+Each stage is a genuine epistemic upgrade — not a label change but a precondition satisfied. The pager boundary (§4) is the `si → to` transition made structurally non-bypassable. Nothing above the pager handles `si`-level data. Nothing below the pager handles `to`-level data. The boundary exists in the type system and module structure, not in documentation.
+
+> The tofeka failure mode is: presenting `si` data as `to`; presenting `to` data as `tosu`. The pager boundary prevents the first. The WAL, fsync discipline, and witness model prevent the second. At every layer the goal is to make the misrepresentation structurally impossible, not merely inadvisable.
+
+### 29.2 The triad: Integrity, Freshness, Epistemic correctness
+
+Three orthogonal failure dimensions cover all state misrepresentation:
+
+| Dimension | Question | Mechanism | Current status |
+|---|---|---|---|
+| **Integrity** | Is this the page we wrote? | AEAD authentication | Stage 1 — implemented |
+| **Freshness** | Is this the most recent state? | LSN / witness chain | Stage 6 — deferred |
+| **Epistemic correctness** | Is the system claiming only what it can verify? | Design constraints at each layer | Continuous |
+
+These are independent. A page can be integral but stale (§5.3 rollback vector: AEAD passes, but it is a faithful copy of an old frame). A system can be neither integral nor fresh if AEAD is skipped and staleness is undetected. The three dimensions must be tracked separately because the mitigations are separate.
+
+**The rollback gap.** Per-page `page_version` closes the single-page rollback case. It does not close the consistent multi-page rollback case. An attacker who replaces all pages with a mutually consistent earlier snapshot will have every page pass AEAD — freshness is the dimension that catches this, not integrity. Until Stage 6, Tosumu can only report freshness as `unanchored`, not as `ok`. Reporting it as `ok` before the witness chain exists would itself be a tofeka claim.
+
+### 29.3 Tofeka violations in storage systems
+
+| System behavior | Claim tier | Evidence tier | Violation |
+|---|---|---|---|
+| Page returned without AEAD check | `to` | `si` | tofeka — inflation |
+| DB presented as consistent, WAL not applied | `tosu` | `to` | tofeka — inflation |
+| Stale read presented as current, no freshness anchor | `tosu` | `to` | tofeka — inflation |
+| `fsync` returned `Ok` on a network FS; durability asserted | `tosu` | `si` | tofeka — inflation (§2 principle 10: sequence ≠ grounding) |
+| Audit log suppressed; verifier told no anomalies exist | `tosu` | `si` | tofeka — deflation |
+
+The last row is the adversarial case. Tosumu's append-only audit chain (§23.3) and independent witness model (§23.4) exist to make deflation detectable: an attacker who wants to claim "nothing happened" cannot erase the witness receipts without access to systems the attacker does not control.
+
+### 29.4 The `tosumu verify --explain` output
+
+The `--explain` flag on `tosumu verify` reports per-page status across all three dimensions:
+
+```
+verifying example.tsm (4 data pages) ...
+
+page 1:
+  integrity:   OK     — AEAD tag verified (this is the page we wrote)
+  freshness:   unanchored — LSN witness not configured (§23, Stage 6)
+  epistemic:   OK     — no overclaiming
+
+page 2:
+  integrity:   FAIL   — AEAD tag mismatch (page corrupted or tampered)
+  freshness:   N/A
+  epistemic:   FAIL   — cannot verify page 2 is what was written
+
+FAILED: 3/4 pages ok, 1 issue(s)
+```
+
+The `freshness: unanchored` status persists until Stage 6. This is intentional honest reporting: we know exactly what we can verify at this stage and what we cannot. Saying `freshness: OK` before the witness chain is implemented would be a tofeka claim in the output of the tool whose purpose is to detect tofeka claims.
+
+### 29.5 Implications for the audit system
+
+The audit chain (§23) records not just *what happened* but *what was claimed to be true at each step*. This is the deeper reading of §23.1:
+
+> The WAL tells you how to recover storage state. The audit log tells you what happened and whether the sequence makes sense.
+
+"Whether the sequence makes sense" is an epistemic claim. Each `VerificationRun` event (§23.2) records the result of a `tosumu verify` call: which pages were checked, what the three-dimension status was for each. This creates an epistemic history — not just a log of operations but a log of *how much the system could verify at each point*.
+
+A verifier with access to the audit chain and witness receipts can reconstruct:
+- Whether integrity was continuously maintained.
+- When freshness became anchored (on first witness configuration).
+- Whether any period of unverified state preceded an anomaly.
+
+This is the difference between an audit log that records events and one that records evidence. Tosumu's goal is the latter.
 
 ---
