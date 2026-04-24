@@ -2907,6 +2907,53 @@ Suppress: set network_server_advisory = false in config.
 
 Not a nag. Once. Suppressible. The right thing.
 
+### 21.10 Using per-page AEAD as the network integrity mechanism
+
+Every Tosumu page already carries a ChaCha20-Poly1305 authentication tag (§8.4). The AAD binds `pgno || page_version || page_type` — so decryption failure means not just "these bytes are wrong" but **"this specific page, at this version, was not written by this database engine with this key."**
+
+On a network filesystem this is more valuable than a plain checksum. A CRC tells you bytes changed. AEAD tells you tosumu didn't write what it's now reading. Those are different diagnoses.
+
+**What AEAD catches on a network path that a plain checksum doesn't:**
+
+| Scenario | CRC/checksum | AEAD |
+|----------|-------------|------|
+| Bit flip in transit | detects | detects |
+| Silent partial write (NFS trailing zeros) | detects if zeros change CRC | detects |
+| Stale read from NFS client cache | may not detect (cache has valid CRC) | detects if version counter in AAD differs |
+| Page swap between databases (same app, different files) | misses (bytes are valid) | detects (DEK is different) |
+| Page rollback (old valid page reinserted) | misses (bytes are valid) | detects if `page_version` in AAD is checked |
+| External write that happens to produce valid CRC | misses | detects (no valid AEAD tag without DEK) |
+
+**Concrete uses in network mode:**
+
+1. **Verify-after-write (§21.3) uses AEAD, not a separate checksum.**  
+   After `fsync`, re-read the page and call `decrypt_page()`. If the tag fails, the filesystem accepted the `fsync` call but did not persist the bytes tosumu wrote. This is the "fsync lied" scenario on unreliable network storage. It surfaces as `CorruptPage { pgno }` — the same typed error as local corruption — so the error path is not special-cased.
+
+2. **Verify-on-open (§21.9) is a full AEAD sweep.**  
+   Not a metadata check. Every page is decrypted (or at minimum its tag verified without decrypting the body — if the AEAD construction permits tag-only verification). A page written by a different database, or corrupted in storage, fails immediately.
+
+3. **Mtime watchdog (§21.9) triggers targeted AEAD re-verification.**  
+   When the watchdog detects an unexpected file modification, re-verify the pages tosumu wrote this session. If any AEAD tag fails, the external modification was destructive. If all tags still verify, the modification was metadata-only (timestamp drift, attribute change). The distinction matters: one is `FileModifiedExternally` + suspend, the other is logged and tolerated.
+
+4. **Session integrity baseline.**  
+   At session open, tosumu records the AEAD-verified page count. On close, it re-verifies the pages written this session and reports:
+   ```
+   [network-exclusive] closed: 42 pages written, 42 AEAD-verified on close. 0 failures.
+   ```
+   A close-time AEAD failure that didn't show up during the session indicates the filesystem swapped or corrupted a page after the write — not impossible on NFS with aggressive attribute caching.
+
+5. **Page version in AAD as a rollback detector.**  
+   Because `page_version` is in the AAD, an old valid ciphertext for page N cannot be substituted for a newer one without AEAD failure. On a network filesystem where a stale cached page might be served instead of the current one, the version increment in the AAD makes this detectable. This is a property tosumu gets for free from the existing design — it only needs to be enforced in network mode by treating any AEAD failure as a hard error rather than a soft warning.
+
+**What AEAD does not catch:**
+
+- **Dropped writes.** If the filesystem silently discards a write (page N was never persisted), the pre-existing page N still has a valid AEAD tag. Verify-after-write catches this: if you write page N and immediately re-read it and the tag fails, the write didn't take. If the tag succeeds but the version is wrong — the old page was served — the AAD version check catches it.
+- **WAL frame corruption.** WAL frames are also AEAD-encrypted (§7.2: `PageWrite` records store `ciphertext_blob`). A corrupt WAL frame fails AEAD during recovery. This is already in the design; network mode just means corruption is more likely.
+
+**The practical upshot:**  
+
+Tosumu's per-page AEAD means network mode doesn't need a separate integrity layer. The encryption *is* the integrity check. The cost is one extra `decrypt_page()` call per written page in verify-after-write mode — roughly one AES/ChaCha block operation per 4096 bytes. That is cheap relative to a network round-trip and extremely cheap relative to data corruption.
+
 ---
 
 ## 22. Server mode and multi-client access (Stage 7+)
