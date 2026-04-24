@@ -320,7 +320,7 @@ impl WalReader {
         let file = open_file_retrying(
             path,
             || OpenOptions::new().read(true).open(path),
-            "reading WAL",
+            "opening WAL for record replay",
         )?;
         Ok(WalReader { reader: BufReader::new(file) })
     }
@@ -1191,7 +1191,8 @@ mod tests {
         match recover(&db_p, &wal_p).unwrap_err() {
             TosumError::FileBusy { path, operation } => {
                 assert_eq!(path, wal_p, "FileBusy must identify the locked file");
-                assert!(!operation.is_empty(), "operation string must not be empty");
+                assert_eq!(operation, "opening WAL for record replay",
+                    "operation must identify which step failed");
             }
             other => panic!("expected FileBusy, got {other:?}"),
         }
