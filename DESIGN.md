@@ -136,14 +136,14 @@ Fixed layout. Plaintext fields are readable without any key so we can refuse to 
 | 16 | 2 | `format_version` | what this file *is* (see §13) |
 | 18 | 2 | `page_size` | 4096 |
 | 20 | 2 | `min_reader_version` | lowest engine `format_version` allowed to open this file (see §13.1) |
-| 22 | 2 | `flags` | bit 0 = encrypted; bit 1 = has keyslots |
+| 22 | 2 | `flags` | bit 0 = reserved (was `encrypted`; always 1); bit 1 = has keyslots |
 | 24 | 8 | `page_count` | total pages including header |
 | 32 | 8 | `freelist_head` | page number or 0 |
 | 40 | 8 | `root_page` | B+ tree root (Stage 2) |
 | 48 | 8 | `wal_checkpoint_lsn` | last durable LSN |
 | 56 | 8 | `dek_id` | monotonic id of the currently-active DEK (for rotation, Stage 4b+) |
 | 64 | 16 | `dek_kat` | AEAD of a fixed known-plaintext under the DEK; cheap wrong-DEK detection |
-| 80 | 2 | `keyslot_count` | number of protector slots present (0 if unencrypted) |
+| 80 | 2 | `keyslot_count` | number of protector slots present (always ≥ 1; slot 0 is the `Sentinel` protector) |
 | 82 | 2 | `keyslot_region_pages` | how many pages after page 0 hold the keyslot region |
 | 84 | 20 | reserved | zero-filled |
 | 104 | 32 | `header_mac` | HMAC-SHA256 over bytes `0..104` **and** the full keyslot region, using `header_mac_key` |
@@ -172,7 +172,7 @@ Everything after page 0 and the **keyslot region** uses the page frame in §5.3.
 
 > **Nonce strategy — future option.** `random 96-bit` is simple and safe for our write volumes. If operational reasoning becomes annoying (e.g. during crash/WAL replay analysis), the migration target is `random_prefix (64 bits) || monotonic_counter (32 bits)` per key. Documented here so we don't rediscover it at 2am.
 
-When encryption is disabled (`flags bit 0 = 0`), the entire 4096 bytes is the plaintext page body. The nonce/version/tag fields are absent, and a CRC32C in the page header provides integrity only (see §15 Q4). This mode exists for Stages 1–3.
+Every database is always encrypted. There is no unencrypted mode. A database opened without a user-supplied passphrase uses the `Sentinel` protector (§8.6) — a machine-generated key stored in keyslot 0 that provides AEAD integrity even before the user has configured a passphrase. The user can rotate the sentinel out at any time by adding a `Passphrase` or `RecoveryKey` protector and removing slot 0.
 
 ### 5.4 Slotted page (leaf data pages)
 
@@ -443,6 +443,8 @@ The engine does **not** auto-checkpoint at arbitrary points. Checkpointing is ei
 
 ### 8.1 Threat model
 
+**Invariant:** every database is always encrypted. There is no opt-out. A database without a user-configured protector uses the `Sentinel` protector (machine-generated key, stored in keyslot 0). The sentinel provides full AEAD integrity from byte one; it is not a placeholder or a CRC substitute.
+
 **In scope:**
 - Attacker with read/write access to the database file at rest.
 - Attacker attempting page swap, page rollback, page reorder, truncation, or bit-flipping.
@@ -522,6 +524,7 @@ Initial protector types:
 
 | Kind | Stage | Notes |
 |---|---|---|
+| `Sentinel` | 1 | Machine-generated 32-byte random key. Stored in keyslot 0 at `init`. Provides full AEAD from day one with no user secret. No KDF — the key is the KEK directly. Intended to be rotated out once a real protector is added. |
 | `Passphrase` | 4a | Argon2id over passphrase + per-slot salt. |
 | `RecoveryKey` | 4b | 256-bit random secret, shown to user once at init; encoded as a groups-of-6 Base32 string. |
 | `Keyfile` | 4b (optional) | Raw 32 bytes read from a file path. |
@@ -538,7 +541,7 @@ One keyslot (256 bytes, exact layout TBD during Stage 4a):
 
 | Size | Field | Notes |
 |---|---|---|
-| 1 | `kind` | 0=Empty, 1=Passphrase, 2=RecoveryKey, 3=Keyfile, 4=Tpm, 5=TpmPlusPin |
+| 1 | `kind` | 0=Empty, 1=Sentinel, 2=Passphrase, 3=RecoveryKey, 4=Keyfile, 5=Tpm, 6=TpmPlusPin |
 | 1 | `version` | protector format version |
 | 2 | `flags` | e.g. "requires PIN", "recovery-only" |
 | 4 | `created_unix` | u32 seconds since epoch, for rotation diagnostics |
@@ -830,9 +833,9 @@ tests/
 ├── stage4_encryption.rs       # encrypted DB open/close, protector unlock
 ├── stage4_keyslots.rs         # multiple protectors, rotation
 ├── fixtures/
-│   ├── v1_unencrypted.tsm     # known-good DB from Stage 1
+│   ├── v1_sentinel.tsm        # known-good DB from Stage 1 (sentinel protector, no passphrase)
 │   ├── v2_with_btree.tsm      # known-good DB from Stage 2
-│   └── v3_encrypted.tsm       # known-good encrypted DB
+│   └── v3_passphrase.tsm      # known-good DB with passphrase protector
 └── common/
     └── mod.rs                 # shared test utilities
 ```
@@ -925,7 +928,7 @@ KATs live in `crypto.rs` as unit tests with hardcoded hex constants.
 Golden files are checked-in database files with known contents. They serve two purposes:
 
 1. **Regression:** Load a v1 DB, verify it still opens and returns expected data.
-2. **Migration testing:** Start with a `v1_unencrypted.tsm`, run migration, verify output matches `v2_expected.tsm`.
+2. **Migration testing:** Start with a `v1_sentinel.tsm`, run migration, verify output matches `v2_expected.tsm`.
 
 **Fixture naming convention:**
 
@@ -1051,7 +1054,7 @@ The absolute minimum. Proves the I/O path works, the data round-trips, and the p
 
 **Proves:** the project exists. Binary runs. Data survives a clean close.
 **Demo:** `tosumu put db.log hello world && tosumu get db.log hello` prints `world`.
-**Explicitly not there:** no page format, no B+ tree, no encryption, no crash safety.
+**Explicitly not there:** no page format, no B+ tree, no crash safety. (Sentinel AEAD is deferred to MVP +1 when the real page format lands.)
 
 #### MVP +1 — "It has a real format" *(Stage 1 storage)*
 
@@ -1065,7 +1068,7 @@ Replace the append-only log with the real on-disk format from §5: file header, 
 
 **Proves:** on-disk format works. Pages are a real concept. Reopen is deterministic.
 **Demo:** `tosumu init db.tsm && tosumu put db.tsm k v && tosumu stat db.tsm` shows 1 record, 1 page.
-**Explicitly not there:** no B+ tree (linear scan only), no WAL, no encryption.
+**Explicitly not there:** no B+ tree (linear scan only), no WAL, no user-configured passphrase (sentinel only).
 
 #### MVP +2 — "It's inspectable" *(Stage 1 debug trio)*
 
@@ -1107,7 +1110,7 @@ Transactions and Write-Ahead Log. First real durability guarantee.
 
 **Proves:** durability. Power loss during commit leaves DB consistent.
 **Demo:** Run `CrashFs` test — inject crash at 20 sites, every recovery is consistent.
-**Explicitly not there:** no encryption, no multi-reader concurrency.
+**Explicitly not there:** no user-configured passphrase (sentinel only until MVP +5), no multi-reader concurrency.
 
 #### MVP +5 — "It's encrypted" *(Stage 4a — single protector)*
 
@@ -1772,9 +1775,9 @@ These are tracked here, not silently deferred.
 1. **Page size.** 4 KB is the obvious default. Do we want to make it configurable at `init` time for experimentation (e.g. 8 KB, 16 KB)? *Tentative: yes, settable at init, immutable after.*
 2. **Endianness on disk.** Little-endian hardcoded. Any reason to revisit? *Tentative: no.*
 3. ~~**Varint flavor.**~~ **Closed.** LEB128, unsigned. See §12.2.
-4. **Checksum vs MAC for unencrypted mode.** If a user opts out of encryption, do we still CRC pages? *Tentative: yes, CRC32C in the page header.*
+4. ~~**Checksum vs MAC for unencrypted mode.**~~ **Closed.** There is no unencrypted mode. All pages use AEAD. The `Sentinel` protector (§8.6) covers Stages 1–3 before user-configured protectors exist. CRC32C is not needed.
 5. **WAL in separate file vs embedded.** Starting with a separate `tosumu.wal` file. Embedded WAL (SQLite-style) is possible later but adds complexity.
-6. **Free page zeroing.** Do we zero freed pages on disk? *Tentative: yes when encrypted (cheap), optional when not.*
+6. **Free page zeroing.** Do we zero freed pages on disk? *Tentative: yes (always encrypted, always cheap).*
 7. **Pager API shape.** References-with-lifetimes vs. closure/handle-based. Default is references; escape hatch documented in §6.2. Decision deferred to Stage 2.
 8. **Global LSN in AEAD AAD.** Would close the consistent-multi-page-rollback gap in §5.3. Cost: every write bumps a global counter that must be durable before the write lands. Deferred to Stage 6.
 9. **Keyslot count default.** 8 slots = 1 page at 256 B/slot + header overhead, which is plenty. Bigger means wasted space; smaller means rotation is annoying. *Tentative: 8 slots, fixed at init.*
