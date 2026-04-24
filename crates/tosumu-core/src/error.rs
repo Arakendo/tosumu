@@ -34,6 +34,14 @@ pub enum TosumError {
 
     #[error("invalid argument: {0}")]
     InvalidArgument(&'static str),
+
+    /// A file needed for a database operation is temporarily locked by another
+    /// process (e.g. AV scanner, backup tool).  The caller should retry later.
+    #[error("file temporarily locked by another process during {operation}: {path:?}")]
+    FileBusy {
+        path: std::path::PathBuf,
+        operation: &'static str,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, TosumError>;

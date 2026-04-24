@@ -25,6 +25,118 @@ use std::path::{Path, PathBuf};
 use crate::error::{Result, TosumError};
 use crate::format::PAGE_SIZE;
 
+// ── Transient-lock retry ─────────────────────────────────────────────────────
+
+/// Maximum number of retry attempts when a transient file-lock error is
+/// encountered before giving up with `TosumError::FileBusy`.
+const MAX_RETRIES: u32 = 5;
+
+/// Returns `true` if `e` is a transient file-lock error that may resolve on retry.
+///
+/// - Windows: ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33).
+/// - Test mode: OS error 32 is accepted as a fault-injection signal on all platforms.
+fn is_transient_lock(e: &std::io::Error) -> bool {
+    #[cfg(windows)]
+    if matches!(e.raw_os_error(), Some(32) | Some(33)) { return true; }
+    // Fault injection in tests synthesises OS error 32 on any platform.
+    #[cfg(test)]
+    if e.raw_os_error() == Some(32) { return true; }
+    let _ = e;
+    false
+}
+
+/// In non-test builds: delegate directly to `open_fn`.
+#[cfg(not(test))]
+fn inject_or_open(open_fn: &impl Fn() -> std::io::Result<File>) -> std::io::Result<File> {
+    open_fn()
+}
+
+/// In test builds: consume a fault-injection ticket before calling `open_fn`.
+#[cfg(test)]
+fn inject_or_open(open_fn: &impl Fn() -> std::io::Result<File>) -> std::io::Result<File> {
+    if fault_injection::should_inject() {
+        Err(std::io::Error::from_raw_os_error(32))
+    } else {
+        open_fn()
+    }
+}
+
+/// Open a file with bounded retry on transient lock errors.
+///
+/// Makes up to `MAX_RETRIES + 1` attempts.  Each transient failure (lock held
+/// by another process) waits 10 ms before retrying.  After exhausting all
+/// attempts returns `TosumError::FileBusy { path, operation }`.
+///
+/// Non-transient errors (permission denied, file not found, …) propagate
+/// immediately without retrying.
+fn open_file_retrying<F>(path: &Path, open_fn: F, operation: &'static str) -> Result<File>
+where
+    F: Fn() -> std::io::Result<File>,
+{
+    for attempt in 0..=MAX_RETRIES {
+        match inject_or_open(&open_fn) {
+            Ok(f) => return Ok(f),
+            Err(e) if is_transient_lock(&e) && attempt < MAX_RETRIES => {
+                // Brief pause to let the lock holder release.
+                // Skipped in tests to keep the suite fast.
+                #[cfg(not(test))]
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) if is_transient_lock(&e) => {
+                // Retries exhausted — report as FileBusy.
+                return Err(TosumError::FileBusy {
+                    path: path.to_path_buf(),
+                    operation,
+                });
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    unreachable!("loop exits via Ok or FileBusy")
+}
+
+// ── Fault injection (test-only) ───────────────────────────────────────────────
+
+/// Fault injection state for lock-error simulation in tests.
+///
+/// Tests that use fault injection MUST hold `LOCK` for their duration to
+/// prevent the fault counter from bleeding into parallel tests.
+#[cfg(test)]
+pub(crate) mod fault_injection {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicU32, Ordering},
+    };
+
+    /// Serialises all fault-injection tests.
+    pub static LOCK: Mutex<()> = Mutex::new(());
+    static FAULTS: AtomicU32 = AtomicU32::new(0);
+
+    /// Set the number of lock faults to inject.
+    pub fn arm(n: u32) { FAULTS.store(n, Ordering::SeqCst); }
+
+    /// Clear all pending faults (called by `FaultGuard` on drop).
+    pub fn disarm() { FAULTS.store(0, Ordering::SeqCst); }
+
+    /// Atomically consume one fault ticket.  Returns `true` iff a fault should
+    /// be injected (counter was > 0 and was decremented).
+    pub fn should_inject() -> bool {
+        FAULTS
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                if v > 0 { Some(v - 1) } else { None }
+            })
+            .is_ok()
+    }
+}
+
+/// RAII guard that clears fault injection state on drop (normal exit *and* panic).
+#[cfg(test)]
+struct FaultGuard;
+#[cfg(test)]
+impl Drop for FaultGuard {
+    fn drop(&mut self) { fault_injection::disarm(); }
+}
+
 // ── Record type discriminants ─────────────────────────────────────────────────
 
 const RT_BEGIN:      u8 = 0x01;
@@ -181,7 +293,11 @@ pub struct WalReader {
 impl WalReader {
     /// Open a WAL file for reading from the beginning.
     pub fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().read(true).open(path)?;
+        let file = open_file_retrying(
+            path,
+            || OpenOptions::new().read(true).open(path),
+            "reading WAL",
+        )?;
         Ok(WalReader { reader: BufReader::new(file) })
     }
 
@@ -272,7 +388,11 @@ pub fn recover(db_path: &Path, wal_path: &Path) -> Result<u64> {
     let mut last_checkpoint_lsn = 0u64;
 
     // Open the main file for writing page frames.
-    let mut db_file = OpenOptions::new().read(true).write(true).open(db_path)?;
+    let mut db_file = open_file_retrying(
+        db_path,
+        || OpenOptions::new().read(true).write(true).open(db_path),
+        "applying WAL recovery to database",
+    )?;
 
     for (lsn, record) in &records {
         match record {
@@ -340,8 +460,12 @@ fn apply_committed_writes(
 /// For MVP+4 there is no reader LSN pinning — the WAL is always fully truncated.
 pub fn checkpoint(db_path: &Path, wal_path: &Path) -> Result<()> {
     recover(db_path, wal_path)?;
-    // Truncate WAL.
-    let file = OpenOptions::new().write(true).open(wal_path)?;
+    // Truncate WAL — only reached if recovery succeeded, so safe to overwrite.
+    let file = open_file_retrying(
+        wal_path,
+        || OpenOptions::new().write(true).open(wal_path),
+        "truncating WAL during checkpoint",
+    )?;
     file.set_len(0)?;
     file.sync_data()?;
     Ok(())
@@ -932,4 +1056,193 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
-    }}
+    }
+
+    // ── Lock-retry / FileBusy tests ───────────────────────────────────────────
+
+    /// After all retry attempts are exhausted with injected lock errors,
+    /// `recover()` must return `TosumError::FileBusy` and leave both the
+    /// database file and the WAL sidecar byte-for-byte unchanged.
+    ///
+    /// This verifies the invariant: lock errors are not corruption.
+    /// A failed recovery leaves files intact so the next `open()` can retry.
+    #[test]
+    fn recovery_returns_file_busy_after_exhausted_retries() {
+        let _fi_lock = fault_injection::LOCK.lock().unwrap();
+        let _cleanup = FaultGuard;
+
+        let db_p  = tmp_db("fi_file_busy");
+        let wal_p = tmp("fi_file_busy");
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+
+        std::fs::write(&db_p, vec![0u8; PAGE_SIZE * 2]).unwrap();
+        {
+            let mut w = WalWriter::create(&wal_p).unwrap();
+            w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
+            let mut frame = Box::new([0u8; PAGE_SIZE]);
+            frame[0] = 0xAB;
+            w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+            w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
+            w.sync().unwrap();
+        }
+
+        let db_before  = std::fs::read(&db_p).unwrap();
+        let wal_before = std::fs::read(&wal_p).unwrap();
+
+        // Exhaust all MAX_RETRIES+1 attempts.
+        fault_injection::arm(MAX_RETRIES + 1);
+
+        let err = recover(&db_p, &wal_p).unwrap_err();
+        assert!(
+            matches!(err, TosumError::FileBusy { .. }),
+            "expected FileBusy, got {err:?}",
+        );
+
+        // Both files must be byte-for-byte unchanged — no partial application.
+        assert_eq!(std::fs::read(&db_p).unwrap(),  db_before,  "database must be unchanged");
+        assert_eq!(std::fs::read(&wal_p).unwrap(), wal_before, "WAL must be unchanged");
+
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+    }
+
+    /// When the injected fault count is fewer than MAX_RETRIES, `recover()`
+    /// retries successfully and applies the committed writes.
+    #[test]
+    fn recovery_retries_and_succeeds_after_transient_faults() {
+        let _fi_lock = fault_injection::LOCK.lock().unwrap();
+        let _cleanup = FaultGuard;
+
+        let db_p  = tmp_db("fi_retry_ok");
+        let wal_p = tmp("fi_retry_ok");
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+
+        std::fs::write(&db_p, vec![0u8; PAGE_SIZE * 2]).unwrap();
+        {
+            let mut w = WalWriter::create(&wal_p).unwrap();
+            w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
+            let mut frame = Box::new([0u8; PAGE_SIZE]);
+            frame[0] = 0xCC;
+            w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+            w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
+            w.sync().unwrap();
+        }
+
+        // Fewer faults than MAX_RETRIES — recovery retries and succeeds.
+        fault_injection::arm(MAX_RETRIES - 1);
+        recover(&db_p, &wal_p).expect("recovery must succeed after transient faults");
+
+        let raw = std::fs::read(&db_p).unwrap();
+        assert_eq!(raw[PAGE_SIZE], 0xCC, "committed write must be applied after retry recovery");
+
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+    }
+
+    /// `TosumError::FileBusy` must carry the path of the locked file and a
+    /// non-empty operation description — not silently swallowed as `Corrupt`.
+    #[test]
+    fn file_busy_error_contains_path_and_operation() {
+        let _fi_lock = fault_injection::LOCK.lock().unwrap();
+        let _cleanup = FaultGuard;
+
+        let db_p  = tmp_db("fi_path_check");
+        let wal_p = tmp("fi_path_check");
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+
+        std::fs::write(&db_p, vec![0u8; PAGE_SIZE]).unwrap();
+        {
+            let mut w = WalWriter::create(&wal_p).unwrap();
+            w.append(&WalRecord::Begin  { txn_id: 1 }).unwrap();
+            w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
+            w.sync().unwrap();
+        }
+
+        fault_injection::arm(MAX_RETRIES + 1);
+
+        // recover() opens the WAL first — FileBusy path must be the WAL path.
+        match recover(&db_p, &wal_p).unwrap_err() {
+            TosumError::FileBusy { path, operation } => {
+                assert_eq!(path, wal_p, "FileBusy must identify the locked file");
+                assert!(!operation.is_empty(), "operation string must not be empty");
+            }
+            other => panic!("expected FileBusy, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+    }
+
+    /// Simulate an AV-scanner-style exclusive lock on the WAL sidecar using a
+    /// real Windows OS file lock (`FILE_SHARE_NONE`).  The background thread
+    /// holds the lock for 25 ms; with MAX_RETRIES × 10 ms = 50 ms total budget,
+    /// `Pager::open` should retry and ultimately succeed.
+    ///
+    /// Run manually: `cargo test -- av_style_lock --ignored`
+    #[test]
+    #[cfg(windows)]
+    #[ignore = "requires Windows file-locking semantics; run manually"]
+    fn av_style_lock_during_recovery_retries_then_succeeds() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use crate::btree::BTree;
+
+        let db_p  = tmp_db("av_lock");
+        let wal_p = wal_path(&db_p);
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+
+        // Create a real DB so we have a valid header and a real encrypted frame.
+        {
+            let mut t = BTree::create(&db_p).unwrap();
+            t.put(b"av_key", b"av_val").unwrap();
+        }
+        let real_frame = {
+            let t = BTree::open(&db_p).unwrap();
+            t.pager.read_raw_frame(1).unwrap()
+        };
+        // Simulate crash: zero page 1, rebuild WAL manually.
+        let mut raw = std::fs::read(&db_p).unwrap();
+        for b in &mut raw[PAGE_SIZE..PAGE_SIZE * 2] { *b = 0; }
+        std::fs::write(&db_p, &raw).unwrap();
+        let _ = std::fs::remove_file(&wal_p);
+        {
+            let mut w = WalWriter::create(&wal_p).unwrap();
+            w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
+            w.append(&WalRecord::PageWrite {
+                pgno: 1, page_version: 1, frame: Box::new(real_frame),
+            }).unwrap();
+            w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
+            w.sync().unwrap();
+        }
+
+        // Hold an exclusive OS lock on the WAL for 25 ms from a background thread.
+        let wal_clone = wal_p.clone();
+        let lock_thread = std::thread::spawn(move || {
+            let _locked = OpenOptions::new()
+                .read(true)
+                .share_mode(0) // FILE_SHARE_NONE — exclusive
+                .open(&wal_clone)
+                .expect("test setup: failed to acquire exclusive OS lock on WAL");
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            // Lock released on drop.
+        });
+
+        // Give the lock thread a moment to acquire before recovery starts.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        // Pager::open triggers WAL recovery with retry — must survive the lock.
+        let t = BTree::open(&db_p).unwrap();
+        assert_eq!(
+            t.get(b"av_key").unwrap(),
+            Some(b"av_val".to_vec()),
+            "key must be visible after AV-style transient OS lock + retry recovery",
+        );
+
+        lock_thread.join().unwrap();
+        let _ = std::fs::remove_file(&db_p);
+        let _ = std::fs::remove_file(&wal_p);
+    }
+}
