@@ -2719,6 +2719,16 @@ When `NetworkWarn` or `NetworkStrict` mode is active, tosumu applies conservativ
 - Checkpoints before close.
 - No background WAL growth — checkpoint is called after every commit above a low threshold.
 - Writes the owner lock file (§21.5).
+- Optionally: **verify-after-write** — after each commit, re-reads the written page(s) and verifies the AEAD tag. This catches silent write corruption from unreliable network storage. It is slower; it is opt-in; it is the correct trade-off for a database on a network share.
+
+```rust
+OpenOptions {
+    network_verify_writes: bool,  // default: false; recommended: true in NetworkWarn/Strict mode
+    ...
+}
+```
+
+This is slower. That is the price of the life decision that put the database on a network share.
 
 This is slower but predictable. Explicitly single-process, single-machine, stored-on-a-network-path. Not multi-machine concurrent access. `NetworkStrict` additionally refuses if the lock probe (§21.6) finds unreliable locking behavior.
 
@@ -2768,11 +2778,12 @@ This is not security. Not correctness. It is human-readable evidence for the ine
 `tosumu stat` includes it:
 
 ```
-Storage location:  \\server\share\data.tsm
-Filesystem:        network (SMB detected)
-Mode:              network-exclusive (NetworkWarn)
-Risk:              elevated
-Owner lock:        DESKTOP-17 pid 1234, opened 2026-04-24T10:42Z
+Storage location:   \\server\share\data.tsm
+Filesystem:         network (SMB detected)
+Mode:               network-exclusive (NetworkWarn)
+Risk:               elevated
+Locking confidence: low  (advisory only; SMB lock semantics unreliable)
+Owner lock:         DESKTOP-17 pid 1234, opened 2026-04-24T10:42Z
 ```
 
 When another process opens the same path and finds a lock file, it warns:
@@ -2817,9 +2828,28 @@ tosumu backup <path>                      # snapshot via copy-and-fsync
 
 ### 21.8 Design principle
 
-Tosumu is **local-first**. Network paths are supported through explicit, conservative modes, not by pretending a network filesystem is a local disk.
+Three tiers of reality, in order of correctness:
 
-Most embedded database corruption on network paths is not a bug in the database. It is a mismatch between assumptions and environment — and the database was silent about it. Tosumu is not silent about it.
+```
+1. Local mode       — correct, fast, safe. The design target.
+2. Server mode      — correct, multi-user. The recommended path for network access.
+3. Network file mode — tolerated, single-user, degraded. For the chaos goblins.
+```
+
+The goal is not to stop users from doing tier 3. It is to:
+
+```
+detect it
+warn loudly
+degrade safely
+give them a better path
+```
+
+So when it breaks, it says: **"this was a bad idea"** — not **"tosumu randomly ate my data."**
+
+**Network file mode must never evolve into a poor man's server mode.** The moment it becomes plausible to run three processes against the same network-share database and have it "mostly work," people will do that, corrupt their data, and the reputation damage accrues to Tosumu. The conservative rules (exclusive lock, single-process, no WAL reader sharing) are not limitations to be lifted — they are the fence that keeps tier 3 from creeping into tier 2's territory.
+
+Tosumu is **local-first**. Network paths are supported through explicit, conservative, single-user modes, not by pretending a network filesystem is a local disk. Most embedded database corruption on network paths is not a bug in the database — it is a mismatch between assumptions and environment, and the database was silent about it. Tosumu is not silent about it.
 
 ---
 
