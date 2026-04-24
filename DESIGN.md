@@ -2647,3 +2647,131 @@ Applied to tosumu:
 **The most honest version of this section:** tosumu is a learning project, and learning projects that try to innovate on 10 axes finish zero of them. The value of this section is naming the ideas clearly so that Stage-N decisions are made deliberately, not accidentally. When Stage 3 WAL design comes up, add the `source` field. When Stage 5 query design comes up, add `GET ... EXPLAIN`. When Stage 6 MVCC comes up, add `--at-lsn`. These are not separate projects. They are one extra field or one extra flag added at the right moment.
 
 ---
+
+## 21. Storage location policy and network filesystem safety
+
+SQLite's WAL documentation states explicitly: all processes sharing a WAL-mode database must be on the same host. WAL uses shared memory for coordination; it does not work reliably over network filesystems. This is the root of most "SQLite got weird on `//server/share`" corruption stories — not a bug in SQLite, but a mismatch between the engine's assumptions and the storage layer beneath it.
+
+Tosumu makes the same assumption (single host, single process) and enforces it rather than relying on users to read the docs.
+
+### 21.1 Storage location policy
+
+Three modes, set at open time:
+
+| Mode | Behavior |
+|------|----------|
+| `LocalOnly` (default) | Refuses to open if the path looks like a network filesystem. Returns `NetworkFilesystemDetected` error with explanation and alternatives. |
+| `NetworkExclusive` | Opens on a network path but applies conservative rules (§21.3). Requires explicit opt-in. |
+| `LocalMirror` | Copies the database to a local working path, operates there, writes back on explicit save or close (§21.4). |
+
+The default refuses rather than silently allowing a configuration that may corrupt data. This is the annoying-but-correct choice.
+
+### 21.2 Network path detection
+
+On open, tosumu inspects the path before acquiring any lock:
+
+- **Windows UNC paths:** `\\server\share\...`
+- **Mapped network drives:** Query the drive type via OS API (`GetDriveType` → `DRIVE_REMOTE`).
+- **POSIX:** Check the filesystem type from `/proc/mounts` or `statfs()`; flag known network types: `nfs`, `cifs`, `smb`, `smbfs`, `nfs4`, `fuse.sshfs`, `glusterfs`, `ceph`.
+- **Docker bind/shared mounts:** Detectable on Linux via `/proc/self/mountinfo`; best-effort on other platforms.
+
+If detection is uncertain, log a warning rather than refusing outright — false positives on unusual local filesystems would be worse than missing some network cases.
+
+When a network path is detected under `LocalOnly` mode:
+
+```
+Error: database path appears to be on a network filesystem.
+
+Path:    \\FILESERVER\shared\app.tsm
+Reason:  WAL and file locking semantics are unreliable across hosts.
+
+Options:
+  1. Move the database to local storage.
+  2. Use --network-mode=exclusive  (single process, no WAL reader sharing).
+  3. Use --network-mode=mirror     (local working copy, write back on save).
+```
+
+### 21.3 Network exclusive mode
+
+When `NetworkExclusive` is requested, tosumu applies conservative rules:
+
+- Holds an **exclusive OS file lock for the entire open lifetime** (not just during writes).
+- Disables WAL reader sharing. No concurrent readers from other processes.
+- All writes use `fsync` aggressively (no lazy flushing).
+- Checkpoints before close.
+- No background WAL growth — checkpoint is called after every commit above a low threshold.
+
+This is slower but predictable. It is explicitly a single-process, single-machine mode that happens to be stored on a network path — not multi-machine concurrent access.
+
+### 21.4 Local mirror mode
+
+For workflows where the database lives on a network share but is accessed by one user at a time (a common scenario):
+
+```
+open \\FILESERVER\shared\project.tsm
+→ detect network path
+→ copy to %LOCALAPPDATA%\tosumu\mirror\{hash}.tsm
+→ acquire advisory lock on remote manifest file
+→ operate entirely on the local copy
+→ on explicit save or close: atomic replace back to network path
+→ release remote manifest lock
+```
+
+The remote manifest lock (`project.tsm.lock`) contains:
+
+```json
+{
+  "host":       "DESKTOP-ABC123",
+  "pid":        4421,
+  "session_id": "01JV...",
+  "opened_utc": "2026-04-24T10:42:00Z",
+  "mode":       "mirror"
+}
+```
+
+This is not a hard lock — network lock semantics are unreliable, which is the entire problem. It is an advisory signal for humans and tooling. When another process attempts to open in mirror mode and finds a stale lock file, it warns:
+
+```
+Warning: project.tsm was last opened by DESKTOP-ABC123 pid 4421 at 10:42 UTC.
+The lock may be stale if that session ended without cleanup.
+Proceed? [y/N]
+```
+
+Not silent. Not automatic. User decides.
+
+### 21.5 Lock probe
+
+Before opening in any mode, tosumu creates a lock probe file (`<db>.lockprobe`) and tests whether OS-level file locking behaves as expected:
+
+1. Create probe file.
+2. Acquire exclusive lock.
+3. Verify lock is visible to a second file descriptor.
+4. Release. Clean up.
+
+If lock behavior appears unreliable (probe acquire fails, or a second open unexpectedly succeeds without blocking), emit `NetworkLockUnreliable` and refuse unless `--force` is passed.
+
+The probe is a fast, best-effort heuristic, not a guarantee. Its value is catching obviously broken environments (some NFS configurations, Samba with `oplocks=no`) rather than certifying all network paths safe.
+
+### 21.6 CLI surface
+
+```
+tosumu open <path> --network-mode=local      # default: refuse on network path
+tosumu open <path> --network-mode=exclusive  # single-process network mode
+tosumu open <path> --network-mode=mirror     # local working copy, write back
+
+tosumu checkout <path> [--dest <local-path>] # copy to local, acquire advisory lock
+tosumu publish  <path> --from <local-path>   # atomic write-back to network path
+
+tosumu copy   <src> <dst>                    # safe copy including WAL flush
+tosumu backup <path>                         # snapshot via copy-and-fsync
+```
+
+`copy` and `backup` always flush and checkpoint first — they do not copy a live database while the WAL contains uncommitted frames. Dragging a `.tsm` file without its WAL is a classic data loss pattern; these commands make the safe operation the easy operation.
+
+### 21.7 Design principle
+
+Tosumu is **local-first**. Network paths are supported through explicit, conservative modes, not by pretending a network filesystem is a local disk.
+
+Most embedded database corruption on network paths is not a bug in the database. It is a mismatch between assumptions and environment — and the database was silent about it. Tosumu is not silent about it.
+
+---
