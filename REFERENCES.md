@@ -782,6 +782,102 @@ The ClassLibrary is a massive enterprise toolkit with ~75 infrastructure librari
 
 ---
 
+---
+
+## Tonesu (Conlang Design Project)
+
+**Location:** `F:\LocalSource\Tonesu`
+
+A constructed language project. Not a code library — a design artifact. Referenced here because the design decisions made during Tonesu's development produced transferable lessons that have been directly incorporated into DESIGN.md.
+
+The core connection: both projects are attempts to build a coherent, self-consistent system from a small set of fixed primitives, where later extensions must compose on top of stable roots rather than revising them. The failure modes are structurally similar.
+
+### Lessons incorporated into DESIGN.md
+
+These are not analogies — they are direct derivations. The DESIGN.md sections listed are where each lesson was applied.
+
+#### The Wilkins failure → §13 format stability policy
+John Wilkins (1668) built *An Essay Towards a Real Character, and a Philosophical Language* — every word encoded its taxonomic position. When the taxonomy was revised, all vocabulary had to change. The language was obsolete before it was finished.
+
+**Applied:** The on-disk page layout, AEAD construction, and keyslot format are Tosumu's primitive roots. They are frozen after Stage 2. New features grow by composition. `format_version` bumps are the controlled exceptions. The migration system exists for those exceptions.
+
+**File:** `F:\LocalSource\Tonesu\spec\domain-creation.md` → §4 Stability Rule
+
+---
+
+#### Tarski hierarchy → §4 layer dependency as structural invariant
+Tonesu's evidential frame `vund…vunds` enforces that the framing level (N+1) refers to the content level (N), but the content cannot reference its container. This is why the Liar Paradox is unexpressible in Tonesu — not forbidden, structurally impossible.
+
+**Applied:** The Tosumu layer diagram (CLI → Query → B+tree → Transaction/WAL → Pager → Crypto → File I/O) is a DAG enforced by module visibility rules, not by convention. Safety-by-convention degrades under time pressure.
+
+**File:** `F:\LocalSource\Tonesu\corpus\translations\Philosophy\liar-paradox.md` → Structural Blocks 1 & 2
+
+---
+
+#### The `go` / `;` distinction → §2 principle 10 (sequence vs. grounding)
+PRF-001 established that Tonesu has two irrecducible connectors: `;` (constant conjunction — A then B, no claim about why) and `go` (necessary connection — A constitutively grounds B). The Cogito requires `go`; the `;` version (S687) is grammatical and true but is what Hume would accept and Descartes would reject.
+
+**Applied:** `fsync` returning `Ok` followed by data being durable is `;`-grade evidence unless the OS contract makes `Ok` mean bytes-on-stable-storage (making it `go`-grade). On a network filesystem the same `Ok` is explicitly `;`-only. Every durability claim in Tosumu should state which kind it is. Verify-after-write + AEAD re-check is the response when a claim is sequence-only.
+
+**File:** `F:\LocalSource\Tonesu\corpus\translations\Philosophy\proof-structure.md` → S687/S688 minimal pair
+
+---
+
+#### AEAD freshness bound → §8.10 / §21.10
+Monday's review of §21.10 identified that AEAD proves *authorship at the claimed version*, not *recency*. An old authentic page frame still verifies. The parallel in Tonesu is that evidential-frame content can be authentic at level N without being the current statement at level N+1 — the frame proves origin, not currency.
+
+**File:** `F:\LocalSource\Tonesu\corpus\translations\Philosophy\liar-paradox.md` → Three-Way Verdict table
+
+---
+
+#### Resist ontological over-determination → §9 naming principle
+DOI-001 S636 initially used `go to-ne-su` (the organized-truth concept) to render "self-evident." The correction: Jefferson's claim is deliberately not anchored to a specific ontological framework — the over-determined name commits to a causal story the source text avoids. Corrected to bare `go to` (primitive reason/principle).
+
+**Applied:** Error variant names in §9 should commit to the observable phenomenon, not the detection mechanism. `Corrupt { pgno }` (phenomenon) is preferable to a mechanism-name when the same observable symptom could be produced by different paths.
+
+**File:** `F:\LocalSource\Tonesu\corpus\translations\Literature\` → DOI-001 batch
+
+---
+
+#### Strategic vagueness vs. unspecified → §2 principle 11
+CDA-001 translated 47 U.S.C. §230 and discovered that `~su-ka-li` and `~si-go-li` (the "provider" and "publisher" categories) are not vague by accident — they are vague by design. `wi-fe'ka-to-fe` ("shall be treated as") suppresses the fuzziness for liability purposes; every new generation of §230 litigation is a case where the suppressed fuzziness re-surfaces.
+
+**Applied:** "Unspecified" (implementation-defined; callers must not rely on it) and "undefined" (any result, including corruption, is permitted) are different design choices with different compatibility implications. Both must be explicitly labeled. The `scan_physical()` / `scan_by_key()` split is the canonical Tosumu example — replacing a vague `scan()` with two explicit contracts.
+
+**File:** `F:\LocalSource\Tonesu\corpus\translations\Law\cda-section230.md` → `~` operator analysis
+
+---
+
+#### Structural impossibility over advisory rules → §2 principle 8
+Tonesu's approach to guardrails is consistent: wherever possible, the dangerous thing is made unexpressible, not just discouraged. The Liar Paradox, cross-layer frame references, metalanguage-reaching-down are all structural impossibilities, not documented pitfalls.
+
+**Applied:** `Err`-returning write closures cannot accidentally commit. `AuthFailed` is not `Ok(suspicious_bytes)`. `#[forbid(unsafe_code)]` is a compiler proof. When a design decision results in a warning in the docs, ask first whether a redesign could make the warning unnecessary.
+
+---
+
+#### Three-caller rule → §2 principle 9
+Tonesu does not admit a new particle, construction, or rule until it has at least three independent qualifying corpus attestations across different registers. One attestation writes the form for its own convenience. Two suggest a pattern. Three reveal the actual contract. The `ke` correction-pivot particle required three attestations in three different register contexts (debate, medical, diplomatic) before admission.
+
+**Applied:** Tosumu traits and public APIs are not locked until three independent, concrete callers drive their shape. `KeyProtector` earns its trait because `Passphrase`, `RecoveryKey`, and `Tpm` are independently motivated. Single-caller convenience wrappers stay concrete.
+
+**File:** `F:\LocalSource\Tonesu\notes\open-questions.md` → OQ-COR-001 resolution
+
+---
+
+### What to read in Tonesu
+
+| File | What it illustrates |
+|------|-------------------|
+| `spec/principles.md` | The 9 normative principles of the language — compare directly with DESIGN.md §2 |
+| `spec/domain-creation.md` | The Stability Rule (§4) and Wilkins lesson; domain-as-namespace = crate-as-namespace |
+| `corpus/translations/Philosophy/proof-structure.md` | `go` vs `;` — sequence vs. grounding; the minimal Cogito pair |
+| `corpus/translations/Philosophy/liar-paradox.md` | Tarski hierarchy; structural impossibility; AEAD freshness bound parallel |
+| `corpus/translations/Law/cda-section230.md` | `~` structural vagueness; unspecified vs. undefined; suppression via naming |
+| `notes/open-questions.md` | Three-attestation rule in practice; how design decisions accumulate |
+| `ARCHITECTURE.md` | Source-of-truth / derived-artifact separation applied to a conlang build pipeline |
+
+---
+
 ## How to use this document
 
 1. **Before starting a stage**, read the DESIGN.md section for that stage.
