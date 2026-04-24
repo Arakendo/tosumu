@@ -147,8 +147,13 @@ impl Pager {
         let kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let kek = derive_passphrase_kek(passphrase, &salt, &kdf_params)?;
 
+        // Generate a unique per-database DEK_ID so that a full-slot splice from a
+        // different database fails AEAD unwrap even when the same passphrase is used.
+        let mut dek_id_buf = [0u8; 8];
+        getrandom::getrandom(&mut dek_id_buf).expect("getrandom failed");
+        let dek_id = u64::from_le_bytes(dek_id_buf) | 1; // ensure non-zero
+
         // Wrap the DEK.
-        let dek_id = 1u64;
         let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, 0, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
 
         // Compute KCV.
@@ -157,6 +162,7 @@ impl Pager {
         // Build page 0.
         let mut page0 = [0u8; PAGE_SIZE];
         write_file_header(&mut page0, &dek); // writes sentinel slot 0; we overwrite below
+        write_u64(&mut page0, OFF_DEK_ID, dek_id); // overwrite hardcoded 1 with per-DB random id
         // Set keyslot count to MAX_KEYSLOTS so the full region is MAC'd.
         write_u16(&mut page0, OFF_KEYSLOT_COUNT, MAX_KEYSLOTS as u16);
 
