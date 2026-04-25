@@ -431,8 +431,11 @@
                                FontWeight="SemiBold"
                                Text="Issues" />
                     <ListView ItemsSource="{Binding VerifyIssues}"
+                              x:Name="VerifyIssuesListView"
                               BorderThickness="0"
-                              Background="Transparent">
+                              Background="Transparent"
+                              SelectionChanged="VerifyIssuesListView_OnSelectionChanged"
+                              MouseDoubleClick="VerifyIssuesListView_OnMouseDoubleClick">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Padding" Value="6,4" />
@@ -474,8 +477,11 @@
                                FontWeight="SemiBold"
                                Text="Page Results" />
                     <ListView ItemsSource="{Binding PageResults}"
+                              x:Name="PageResultsListView"
                               BorderThickness="0"
-                              Background="Transparent">
+                              Background="Transparent"
+                              SelectionChanged="PageResultsListView_OnSelectionChanged"
+                              MouseDoubleClick="PageResultsListView_OnMouseDoubleClick">
                         <ListView.ItemContainerStyle>
                             <Style TargetType="ListViewItem">
                                 <Setter Property="Padding" Value="6,4" />

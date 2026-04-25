@@ -4,6 +4,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
 using Tosumu.Cli;
@@ -329,6 +330,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         ShowHexColumns = ShowHexColumnsCheckBox.IsChecked == true;
         UpdateHexColumnVisibility();
+    }
+
+    private void VerifyIssuesListView_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (VerifyIssuesListView.SelectedItem is VerifyIssueRow row)
+        {
+            SelectPageNumberFromRow(row.Pgno, "issue");
+        }
+    }
+
+    private async void VerifyIssuesListView_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (VerifyIssuesListView.SelectedItem is VerifyIssueRow row)
+        {
+            await InspectSelectedPageFromRowAsync(row.Pgno, "verification issue");
+        }
+    }
+
+    private void PageResultsListView_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (PageResultsListView.SelectedItem is PageVerifyRow row)
+        {
+            SelectPageNumberFromRow(row.Pgno, "page result");
+        }
+    }
+
+    private async void PageResultsListView_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (PageResultsListView.SelectedItem is PageVerifyRow row)
+        {
+            await InspectSelectedPageFromRowAsync(row.Pgno, "page result");
+        }
     }
 
     private void PageRecordsListView_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -715,6 +748,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         PageRecords.Clear();
         PageRecords.Add(new PageRecordRow("-", "-", "-", "Select a page or inspect root to decode records.", "-", "Turn to a different page to compare record payloads.", "-", IsPlaceholder: true));
         SelectPageRecord(null);
+    }
+
+    private void SelectPageNumberFromRow(string pgnoText, string sourceLabel)
+    {
+        if (!ulong.TryParse(pgnoText, out var pageNumber))
+        {
+            return;
+        }
+
+        PageNumberText = pageNumber.ToString();
+        StatusText = $"Selected page {pageNumber} from {sourceLabel}. Double-click to inspect it.";
+    }
+
+    private async Task InspectSelectedPageFromRowAsync(string pgnoText, string sourceLabel)
+    {
+        if (!ulong.TryParse(pgnoText, out var pageNumber))
+        {
+            return;
+        }
+
+        if (!TryGetValidDatabasePath(out var path))
+        {
+            return;
+        }
+
+        if (!TryGetUnlockSelection($"inspect page {pageNumber} from the {sourceLabel}", out var unlockSelection))
+        {
+            return;
+        }
+
+        PageNumberText = pageNumber.ToString();
+
+        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        {
+            StatusText = $"Inspecting page {pageNumber} from the {sourceLabel}...";
+            AddRecentDatabasePath(path);
+            await LoadPageAsync(path, pageNumber, unlock);
+            StatusText = $"Loaded page {pageNumber} from the {sourceLabel}.";
+        });
     }
 
     private void UpdateHexColumnVisibility()
