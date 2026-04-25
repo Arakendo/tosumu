@@ -4,6 +4,7 @@ use thiserror::Error;
 ///
 /// The full variant taxonomy is in DESIGN.md §9.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TosumuError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -22,6 +23,14 @@ pub enum TosumuError {
 
     #[error("OS RNG unavailable — cannot generate key material")]
     RngFailed,
+
+    #[error("file is truncated: expected {expected} bytes, found {found}")]
+    FileTruncated { expected: u64, found: u64 },
+
+    /// Database handle is unusable after an unrecoverable corruption or auth failure.
+    /// The caller must close and re-open (or restore from backup).
+    #[error("database handle is poisoned after corruption or authentication failure")]
+    Poisoned,
 
     #[error("not a tosumu file: bad magic or header")]
     NotATosumFile,

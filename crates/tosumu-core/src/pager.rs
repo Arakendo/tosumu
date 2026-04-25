@@ -842,7 +842,7 @@ fn finish_open(
         .checked_mul(PAGE_SIZE as u64)
         .ok_or(TosumuError::Corrupt { pgno: 0, reason: "page_count overflow" })?;
     if file_len < expected_len {
-        return Err(TosumuError::Corrupt { pgno: 0, reason: "file is truncated" });
+        return Err(TosumuError::FileTruncated { expected: expected_len, found: file_len });
     }
 
     let freelist_head = read_u64(page0, OFF_FREELIST_HEAD);
