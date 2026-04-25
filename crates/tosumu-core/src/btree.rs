@@ -47,7 +47,7 @@ const HDR_FREE_END: usize = PAGE_OFF_FREE_END;
 /// Dual-purpose field at offset 14:
 /// • leaf pages:     pgno of next leaf in sorted order (0 = tail)
 /// • internal pages: pgno of leftmost child
-const HDR_LEFTMOST: usize = 14;
+const HDR_LEFTMOST: usize = PAGE_OFF_LEFTMOST;
 
 // Internal slot overhead: right_child(u64) + key_len(u16) = 10 bytes.
 const INTERNAL_RECORD_OVERHEAD: usize = 10;
@@ -139,6 +139,15 @@ impl BTree {
 
     /// Insert or update `key` → `value`.
     pub fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        if key.is_empty() {
+            return Err(TosumuError::InvalidArgument("key must not be empty"));
+        }
+        if key.len() > u16::MAX as usize {
+            return Err(TosumuError::InvalidArgument("key exceeds u16 maximum length"));
+        }
+        if value.len() > u16::MAX as usize {
+            return Err(TosumuError::InvalidArgument("value exceeds u16 maximum length"));
+        }
         let record = encode_live(key, value);
         let root = self.pager.root_page();
         if let Some((promoted_key, new_pgno)) = self.insert_record(root, key, &record)? {
@@ -443,9 +452,10 @@ impl BTree {
             Ok(internal_read_all(page))
         })?;
 
-        // Insert new separator in position (unsorted is fine; find_child scans all).
+        // Append new separator then sort: produces a sorted entry list for mid-split.
         entries.push((new_sep.to_vec(), new_child));
-        // Sort to make mid-split deterministic.
+        // Sort to make mid-split deterministic (entries arrived in key order but
+        // push appends at the tail).
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
 
         let mid = entries.len() / 2;
@@ -557,7 +567,9 @@ impl BTree {
                         reason: "internal page has zero leftmost child",
                     });
                 }
-                // Sort by separator so routing checks are deterministic regardless of slot order.
+                // Sort by separator for deterministic duplicate/routing checks.
+                // Slots are always written in sorted order; this also defends against
+                // any on-disk reordering caused by corruption.
                 entries.sort_by(|(a, _), (b, _)| a.cmp(b));
                 // Separators must be distinct.
                 for i in 1..entries.len() {

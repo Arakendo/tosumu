@@ -46,9 +46,12 @@ pub const PAGE_OFF_FLAGS: usize = 1;       // u8:  per-page flags (reserved, zer
 pub const PAGE_OFF_SLOT_COUNT: usize = 2;  // u16: number of live + tombstone slot entries
 pub const PAGE_OFF_FREE_START: usize = 4;  // u16: first free byte offset (grows up from header)
 pub const PAGE_OFF_FREE_END: usize = 6;    // u16: first used heap byte offset (grows down)
-// [8..12]  fragmented_bytes u32 — wasted bytes from in-place tombstoning
-// [12..20] next_leaf u64     — leaf page chain (0 = no next)
-// [20..22] reserved u16
+// [8..10]  fragmented_bytes u16 — wasted bytes from in-place tombstoning
+// [10..14] reserved (two u16 fields, zero)
+pub const PAGE_OFF_LEFTMOST: usize = 14;   // u64: dual-purpose:
+                                            //      leaf  → pgno of next leaf in chain (0 = tail)
+                                            //      internal → pgno of leftmost child
+// [22]     first byte of the slot array / heap body
 
 /// Available bytes for the slot array + heap combined.
 pub const PAGE_BODY_USABLE: usize = PAGE_PLAINTEXT_SIZE - PAGE_HEADER_SIZE; // 4034
