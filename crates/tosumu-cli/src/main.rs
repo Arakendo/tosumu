@@ -180,6 +180,15 @@ enum InspectAction {
         #[command(flatten)]
         unlock: InspectUnlockArgs,
     },
+    /// Inspect the B-tree structure rooted at the current root page.
+    Tree {
+        path: PathBuf,
+        /// Emit a structured JSON envelope.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        unlock: InspectUnlockArgs,
+    },
     /// Inspect configured protectors / keyslots.
     Protectors {
         path: PathBuf,
@@ -236,6 +245,34 @@ struct InspectPagePayload {
     free_start: u16,
     free_end: u16,
     records: Vec<InspectRecordPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectTreePayload {
+    root_pgno: u64,
+    root: InspectTreeNodePayload,
+}
+
+#[derive(Serialize)]
+struct InspectTreeNodePayload {
+    pgno: u64,
+    page_version: u64,
+    page_type: u8,
+    page_type_name: &'static str,
+    slot_count: u16,
+    free_start: u16,
+    free_end: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_leaf: Option<u64>,
+    children: Vec<InspectTreeChildPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectTreeChildPayload {
+    relation: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    separator_key_hex: Option<String>,
+    child: Box<InspectTreeNodePayload>,
 }
 
 #[derive(Serialize)]
@@ -780,6 +817,42 @@ fn cmd_inspect_page_json(path: &Path, pgno: u64, unlock: Option<UnlockSecret>, n
     })
 }
 
+fn map_tree_node_payload(node: tosumu_core::inspect::TreeNodeSummary) -> InspectTreeNodePayload {
+    InspectTreeNodePayload {
+        pgno: node.pgno,
+        page_version: node.page_version,
+        page_type: node.page_type,
+        page_type_name: page_type_name(node.page_type),
+        slot_count: node.slot_count,
+        free_start: node.free_start,
+        free_end: node.free_end,
+        next_leaf: node.next_leaf,
+        children: node.children.into_iter().map(|child| InspectTreeChildPayload {
+            relation: match child.relation {
+                tosumu_core::inspect::TreeChildRelation::Leftmost => "leftmost",
+                tosumu_core::inspect::TreeChildRelation::Separator => "separator",
+            },
+            separator_key_hex: child.separator_key.as_ref().map(|key| bytes_to_hex(key)),
+            child: Box::new(map_tree_node_payload(*child.child)),
+        }).collect(),
+    }
+}
+
+fn cmd_inspect_tree_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<String, TosumuError> {
+    let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
+    let tree = tosumu_core::inspect::inspect_tree_from_pager(&pager)?;
+    render_json(&InspectEnvelope {
+        schema_version: 1,
+        command: "inspect.tree",
+        ok: true,
+        payload: Some(InspectTreePayload {
+            root_pgno: tree.root_pgno,
+            root: map_tree_node_payload(tree.root),
+        }),
+        error: None,
+    })
+}
+
 fn cmd_inspect_protectors_json(path: &Path) -> Result<String, TosumuError> {
     let slots = PageStore::list_keyslots(path)?;
     render_json(&InspectEnvelope {
@@ -876,6 +949,15 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
                     println!("{}", cmd_inspect_page_json(&path, page, unlock, no_prompt)?);
                 } else {
                     cmd_dump(&path, Some(page), unlock, no_prompt)?;
+                }
+            }
+            InspectAction::Tree { path, json, unlock } => {
+                let (unlock, no_prompt) = resolve_inspect_unlock(unlock)?;
+                let tree_json = cmd_inspect_tree_json(&path, unlock, no_prompt)?;
+                if json {
+                    println!("{tree_json}");
+                } else {
+                    println!("{tree_json}");
                 }
             }
             InspectAction::Protectors { path, json } => {

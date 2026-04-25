@@ -3,6 +3,7 @@
 // Used by: `tosumu dump`, `tosumu hex`, `tosumu verify` CLI commands.
 // Source of truth: DESIGN.md §12.1 (MVP +2).
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -102,6 +103,33 @@ pub struct PageSummary {
     pub records: Vec<RecordInfo>,
 }
 
+pub struct TreeSummary {
+    pub root_pgno: u64,
+    pub root: TreeNodeSummary,
+}
+
+pub struct TreeNodeSummary {
+    pub pgno: u64,
+    pub page_version: u64,
+    pub page_type: u8,
+    pub slot_count: u16,
+    pub free_start: u16,
+    pub free_end: u16,
+    pub next_leaf: Option<u64>,
+    pub children: Vec<TreeChildSummary>,
+}
+
+pub struct TreeChildSummary {
+    pub relation: TreeChildRelation,
+    pub separator_key: Option<Vec<u8>>,
+    pub child: Box<TreeNodeSummary>,
+}
+
+pub enum TreeChildRelation {
+    Leftmost,
+    Separator,
+}
+
 /// Decrypt and parse page `pgno`.
 ///
 /// Returns `Err(InvalidArgument)` when `pgno` is 0 or out of range.
@@ -109,6 +137,11 @@ pub struct PageSummary {
 pub fn inspect_page(path: &Path, pgno: u64) -> Result<PageSummary> {
     let pager = Pager::open_readonly(path)?;
     inspect_page_from_pager(&pager, pgno)
+}
+
+pub fn inspect_tree(path: &Path) -> Result<TreeSummary> {
+    let pager = Pager::open_readonly(path)?;
+    inspect_tree_from_pager(&pager)
 }
 
 /// Decrypt and parse page `pgno` from an already-open pager.
@@ -191,6 +224,119 @@ pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> 
         free_end,
         records,
     })
+}
+
+pub fn inspect_tree_from_pager(pager: &Pager) -> Result<TreeSummary> {
+    let root_pgno = pager.root_page();
+    if root_pgno == 0 {
+        return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0" });
+    }
+
+    let mut visited = HashSet::new();
+    let root = inspect_tree_node_from_pager(pager, root_pgno, &mut visited, 1)?;
+    Ok(TreeSummary { root_pgno, root })
+}
+
+fn inspect_tree_node_from_pager(
+    pager: &Pager,
+    pgno: u64,
+    visited: &mut HashSet<u64>,
+    depth: usize,
+) -> Result<TreeNodeSummary> {
+    const MAX_DEPTH: usize = 64;
+
+    if depth > MAX_DEPTH {
+        return Err(TosumuError::Corrupt { pgno, reason: "tree inspection exceeded maximum depth (cycle suspected)" });
+    }
+
+    if pgno == 0 || pgno >= pager.page_count() {
+        return Err(TosumuError::InvalidArgument("tree node page number out of range"));
+    }
+
+    if !visited.insert(pgno) {
+        return Err(TosumuError::Corrupt { pgno, reason: "tree inspection encountered a repeated page" });
+    }
+
+    let result = (|| {
+        let (plaintext, page_version) = pager.read_page(pgno)?;
+        let page_type = plaintext[PAGE_OFF_TYPE];
+        let slot_count = read_u16(&plaintext, PAGE_OFF_SLOT_COUNT);
+        let free_start = read_u16(&plaintext, PAGE_OFF_FREE_START);
+        let free_end = read_u16(&plaintext, PAGE_OFF_FREE_END);
+
+        match page_type {
+            PAGE_TYPE_LEAF => Ok(TreeNodeSummary {
+                pgno,
+                page_version,
+                page_type,
+                slot_count,
+                free_start,
+                free_end,
+                next_leaf: match read_u64(&plaintext, PAGE_OFF_LEFTMOST) {
+                    0 => None,
+                    next => Some(next),
+                },
+                children: Vec::new(),
+            }),
+            PAGE_TYPE_INTERNAL => {
+                let mut children = Vec::with_capacity(slot_count as usize + 1);
+                let leftmost = read_u64(&plaintext, PAGE_OFF_LEFTMOST);
+                let leftmost_child = inspect_tree_node_from_pager(pager, leftmost, visited, depth + 1)?;
+                children.push(TreeChildSummary {
+                    relation: TreeChildRelation::Leftmost,
+                    separator_key: None,
+                    child: Box::new(leftmost_child),
+                });
+
+                for index in 0..slot_count as usize {
+                    let (separator_key, right_child) = inspect_internal_slot(&plaintext, pgno, index)?;
+                    let child = inspect_tree_node_from_pager(pager, right_child, visited, depth + 1)?;
+                    children.push(TreeChildSummary {
+                        relation: TreeChildRelation::Separator,
+                        separator_key: Some(separator_key),
+                        child: Box::new(child),
+                    });
+                }
+
+                Ok(TreeNodeSummary {
+                    pgno,
+                    page_version,
+                    page_type,
+                    slot_count,
+                    free_start,
+                    free_end,
+                    next_leaf: None,
+                    children,
+                })
+            }
+            _ => Err(TosumuError::Corrupt { pgno, reason: "unexpected page type during tree inspection" }),
+        }
+    })();
+
+    visited.remove(&pgno);
+    result
+}
+
+fn inspect_internal_slot(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, index: usize) -> Result<(Vec<u8>, u64)> {
+    let slot_pos = PAGE_HEADER_SIZE + index * SLOT_SIZE;
+    if slot_pos + SLOT_SIZE > PAGE_PLAINTEXT_SIZE {
+        return Err(TosumuError::Corrupt { pgno, reason: "internal slot header overflow" });
+    }
+
+    let off = read_u16(page, slot_pos) as usize;
+    let len = read_u16(page, slot_pos + 2) as usize;
+    if off + len > PAGE_PLAINTEXT_SIZE || len < 10 {
+        return Err(TosumuError::Corrupt { pgno, reason: "invalid internal slot" });
+    }
+
+    let rec = &page[off..off + len];
+    let right_child = u64::from_le_bytes(rec[0..8].try_into().unwrap());
+    let key_len = u16::from_le_bytes([rec[8], rec[9]]) as usize;
+    if 10 + key_len > len {
+        return Err(TosumuError::Corrupt { pgno, reason: "internal slot key overflow" });
+    }
+
+    Ok((rec[10..10 + key_len].to_vec(), right_child))
 }
 
 // ── Verification ─────────────────────────────────────────────────────────────

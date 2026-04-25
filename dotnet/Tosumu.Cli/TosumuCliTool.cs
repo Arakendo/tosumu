@@ -180,6 +180,28 @@ public sealed class TosumuCliTool
         return envelope.Payload;
     }
 
+    public async Task<TosumuInspectTreePayload> GetTreeAsync(
+        string path,
+        TosumuInspectUnlockOptions? unlock = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RunInspectCommandAsync(new[] { "inspect", "tree", "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectTreePayload>(result, "inspect.tree");
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException("inspect.tree", result, envelope.Error);
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect tree returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
     public async Task<TosumuInspectProtectorsPayload> GetProtectorsAsync(string path, CancellationToken cancellationToken = default)
     {
         var result = await RunAsync(new[] { "inspect", "protectors", "--json", path }, cancellationToken).ConfigureAwait(false);
@@ -393,6 +415,26 @@ public sealed record TosumuInspectPagePayload(
     [property: JsonPropertyName("free_start")] ushort FreeStart,
     [property: JsonPropertyName("free_end")] ushort FreeEnd,
     [property: JsonPropertyName("records")] IReadOnlyList<TosumuInspectRecordPayload> Records);
+
+public sealed record TosumuInspectTreePayload(
+    [property: JsonPropertyName("root_pgno")] ulong RootPgno,
+    [property: JsonPropertyName("root")] TosumuInspectTreeNodePayload Root);
+
+public sealed record TosumuInspectTreeNodePayload(
+    [property: JsonPropertyName("pgno")] ulong Pgno,
+    [property: JsonPropertyName("page_version")] ulong PageVersion,
+    [property: JsonPropertyName("page_type")] byte PageType,
+    [property: JsonPropertyName("page_type_name")] string PageTypeName,
+    [property: JsonPropertyName("slot_count")] ushort SlotCount,
+    [property: JsonPropertyName("free_start")] ushort FreeStart,
+    [property: JsonPropertyName("free_end")] ushort FreeEnd,
+    [property: JsonPropertyName("next_leaf")] ulong? NextLeaf,
+    [property: JsonPropertyName("children")] IReadOnlyList<TosumuInspectTreeChildPayload> Children);
+
+public sealed record TosumuInspectTreeChildPayload(
+    [property: JsonPropertyName("relation")] string Relation,
+    [property: JsonPropertyName("separator_key_hex")] string? SeparatorKeyHex,
+    [property: JsonPropertyName("child")] TosumuInspectTreeNodePayload Child);
 
 public sealed record TosumuInspectProtectorsPayload(
     [property: JsonPropertyName("slot_count")] int SlotCount,

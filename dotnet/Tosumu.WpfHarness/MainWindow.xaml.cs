@@ -1,11 +1,16 @@
-﻿using System.Collections.ObjectModel;
+﻿using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.Win32;
 using Tosumu.Cli;
 
@@ -13,7 +18,15 @@ namespace Tosumu.WpfHarness;
 
 public partial class MainWindow : Window, INotifyPropertyChanged
 {
+    private sealed record TreePageVisitState(ulong PageNumber, string PageTypeName);
+    private static readonly JsonSerializerOptions TreeWebViewJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
     private const int MaxRecentDatabaseCount = 8;
+    private const int MaxDebugLogChars = 50_000;
+    private const int MaxTreePageHistoryCount = 10;
     private const double KeyHexColumnVisibleWidth = 320;
     private const double ValueHexColumnVisibleWidth = 420;
 
@@ -28,6 +41,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string pageSummaryText = "Select a page or inspect root to decode the current page.";
     private bool showHexColumns;
     private string statusText = "Activity updates appear here while you browse, verify, and inspect pages.";
+    private ulong? treeFocusPageNumber;
+    private string treeFocusPageTypeName = string.Empty;
+    private string treeFocusText = "Focus page: inspect root or another page to begin tree navigation.";
+    private ulong? treeRootPageNumber;
+    private string treeRootText = "Root page: load a database header to discover the tree root.";
+    private string treeTrustText = "Trust: verify pending";
     private string unlockModeHintText = "You will be prompted only if the current database actually requires credentials.";
     private Brush verifyIssueSummaryBrush = Brushes.Transparent;
     private string verifyIssueSummaryText = string.Empty;
@@ -35,12 +54,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private Brush verificationBadgeBrush = Brushes.Khaki;
     private string verificationBadgeText = "Verify pending";
     private string verifySummaryText = "Run verification to check page auth and B-tree integrity.";
+    private TosumuInspectTreePayload? treeSnapshot;
+    private readonly ConcurrentQueue<string> debugLogBuffer = new();
+    private readonly List<TreePageVisitState> treePageVisitStates = [];
     private readonly string sessionStatePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "Tosumu",
         "WpfHarness",
         "session.json");
+    private DispatcherTimer? debugLogFlushTimer;
     private bool restoreDatabaseOnLoad;
+    private Task? treeWebViewInitializationTask;
     private TosumuCliTool? cli;
 
     public MainWindow()
@@ -50,6 +74,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         Loaded += MainWindow_OnLoaded;
         DataContext = this;
         UnlockModeComboBox.SelectedIndex = 0;
+        debugLogFlushTimer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(150),
+            DispatcherPriority.Background,
+            (_, _) => FlushDebugLog(),
+            Dispatcher);
+        debugLogFlushTimer.Start();
         UpdateUnlockInputs();
         UpdateHexColumnVisibility();
         ResetHeaderState("Open a database to load the header automatically.");
@@ -57,6 +87,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ResetPageState();
         ResetProtectorsState();
         LoadSessionState();
+        LogDebug("Harness initialized. Browse to a .tsm file or open a recent database to begin.");
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -72,6 +103,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ObservableCollection<ProtectorSlotRow> ProtectorSlots { get; } = [];
 
     public ObservableCollection<string> RecentDatabasePaths { get; } = [];
+
+    public ObservableCollection<TreePageVisitRow> TreePageVisits { get; } = [];
 
     public string DatabasePath
     {
@@ -133,6 +166,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set => SetProperty(ref statusText, value);
     }
 
+    public string TreeFocusText
+    {
+        get => treeFocusText;
+        set => SetProperty(ref treeFocusText, value);
+    }
+
+    public string TreeRootText
+    {
+        get => treeRootText;
+        set => SetProperty(ref treeRootText, value);
+    }
+
+    public string TreeTrustText
+    {
+        get => treeTrustText;
+        set => SetProperty(ref treeTrustText, value);
+    }
+
     public string UnlockModeHintText
     {
         get => unlockModeHintText;
@@ -182,7 +233,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await RunBusyActionAsync(async () =>
+        await RunBusyActionAsync("reload header", async () =>
         {
             StatusText = "Loading header...";
             AddRecentDatabasePath(path);
@@ -204,11 +255,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        await RunUnlockableInspectActionAsync("verify database", unlockSelection, async unlock =>
         {
             StatusText = "Running verification...";
             AddRecentDatabasePath(path);
             var verify = await LoadVerifyAsync(path, unlock);
+            await LoadTreeAsync(path, unlock);
 
             StatusText = BuildVerifyStatusText(path, verify);
         });
@@ -226,11 +278,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        await RunUnlockableInspectActionAsync($"inspect page {pageNumber}", unlockSelection, async unlock =>
         {
             StatusText = $"Inspecting page {pageNumber}...";
             AddRecentDatabasePath(path);
             await LoadPageAsync(path, pageNumber, unlock);
+            await LoadTreeAsync(path, unlock);
 
             StatusText = $"Loaded page {pageNumber} from {System.IO.Path.GetFileName(path)}.";
         });
@@ -243,7 +296,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await RunBusyActionAsync(async () =>
+        await RunBusyActionAsync("load protectors", async () =>
         {
             StatusText = "Loading protectors...";
             AddRecentDatabasePath(path);
@@ -265,7 +318,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
-        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        await RunUnlockableInspectActionAsync("inspect root page", unlockSelection, async unlock =>
         {
             StatusText = "Loading header and root page...";
             AddRecentDatabasePath(path);
@@ -273,6 +326,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var header = await LoadHeaderAsync(path);
             PageNumberText = header.RootPage.ToString();
             await LoadPageAsync(path, header.RootPage, unlock);
+            await LoadTreeAsync(path, unlock);
 
             StatusText = $"Loaded root page {header.RootPage} from {System.IO.Path.GetFileName(path)}.";
         });
@@ -292,7 +346,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         var hasPageNumber = ulong.TryParse(PageNumberText.Trim(), out var pageNumber);
 
-        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        await RunUnlockableInspectActionAsync("refresh all panes", unlockSelection, async unlock =>
         {
             StatusText = "Refreshing header, verify, protectors, and page...";
             AddRecentDatabasePath(path);
@@ -300,6 +354,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             await LoadHeaderAsync(path);
             await LoadProtectorsAsync(path);
             await LoadVerifyAsync(path, unlock);
+            await LoadTreeAsync(path, unlock);
 
             if (hasPageNumber)
             {
@@ -325,6 +380,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         if (dialog.ShowDialog(this) == true)
         {
+            LogDebug($"Selected database path: {dialog.FileName}");
             DatabasePath = dialog.FileName;
             AddRecentDatabasePath(dialog.FileName);
             _ = AutoLoadSelectedDatabaseAsync(dialog.FileName, "Opened database and loaded header.");
@@ -343,6 +399,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        LogDebug($"Selected recent database: {path}");
         DatabasePath = path;
         _ = AutoLoadSelectedDatabaseAsync(path, "Loaded header from recent database.");
     }
@@ -351,6 +408,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         ShowHexColumns = ShowHexColumnsCheckBox.IsChecked == true;
         UpdateHexColumnVisibility();
+    }
+
+    private void TreePagesListView_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is ListView { SelectedItem: TreePageVisitRow row } && !row.IsPlaceholder)
+        {
+            SelectPageNumberFromRow(row.Page, "tree history");
+        }
+    }
+
+    private async void TreePagesListView_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is ListView { SelectedItem: TreePageVisitRow row } && !row.IsPlaceholder)
+        {
+            await InspectSelectedPageFromRowAsync(row.Page, "tree history");
+        }
+    }
+
+    private async void TreePagesListView_OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || sender is not ListView { SelectedItem: TreePageVisitRow row } || row.IsPlaceholder)
+        {
+            return;
+        }
+
+        await InspectSelectedPageFromRowAsync(row.Page, "tree history");
+        e.Handled = true;
     }
 
     private void Window_OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -441,6 +525,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
+        await EnsureTreeWebViewInitializedAsync();
+
         if (!restoreDatabaseOnLoad)
         {
             return;
@@ -451,10 +537,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     private async Task RunUnlockableInspectActionAsync(
+        string operationName,
         HarnessUnlockSelection? unlockSelection,
         Func<TosumuInspectUnlockOptions?, Task> action)
     {
         SetBusy(true);
+        LogDebug($"Starting {operationName} (unlock={DescribeUnlockSelection(unlockSelection)}).");
 
         try
         {
@@ -463,27 +551,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 try
                 {
                     await action(unlockSelection?.ToUnlockOptions());
+                    LogDebug($"Completed {operationName}.");
                     return;
                 }
                 catch (TosumuInspectCommandException ex) when (string.Equals(ex.ErrorKind, "wrong_key", StringComparison.Ordinal))
                 {
                     StatusText = "Unlock required or provided secret was rejected.";
+                    LogInspectFailure(operationName, ex);
                     SetBusy(false);
 
                     if (!TryPromptForUnlockRetry(out unlockSelection))
                     {
                         StatusText = "Unlock retry cancelled.";
+                        LogDebug($"Cancelled {operationName} after unlock retry prompt.");
                         return;
                     }
 
                     ApplyUnlockSelection(unlockSelection);
+                    LogDebug($"Retrying {operationName} with unlock={DescribeUnlockSelection(unlockSelection)}.");
                     SetBusy(true);
                 }
             }
         }
+        catch (TosumuInspectCommandException ex)
+        {
+            StatusText = "Last command failed.";
+            LogInspectFailure(operationName, ex);
+            MessageBox.Show(this, ex.Message, "Tosumu Harness", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
         catch (Exception ex)
         {
             StatusText = "Last command failed.";
+            LogException(operationName, ex);
             MessageBox.Show(this, ex.Message, "Tosumu Harness", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
@@ -505,12 +604,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (dialog.ShowDialog(this) == true)
         {
             KeyfilePathTextBox.Text = dialog.FileName;
+            LogDebug($"Selected keyfile path: {dialog.FileName}");
         }
     }
 
     private void MainWindow_OnClosing(object? sender, CancelEventArgs e)
     {
+        debugLogFlushTimer?.Stop();
         SaveSessionState();
+    }
+
+    private void ClearDebugConsoleButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        DebugLogTextBox.Clear();
+        while (debugLogBuffer.TryDequeue(out _))
+        {
+        }
+
+        LogDebug("Debug console cleared.");
     }
 
     private void UnlockModeComboBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -522,6 +633,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         cli ??= new TosumuCliTool();
         ExecutableStateText = cli.ExecutablePath;
+        LogDebug($"CLI resolved to {cli.ExecutablePath}");
         return cli;
     }
 
@@ -529,6 +641,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         var header = await GetCli().GetHeaderAsync(path);
         var fileName = Path.GetFileName(path);
+        treeRootPageNumber = header.RootPage;
 
         HeaderRows.Clear();
         HeaderRows.Add(new HeaderFieldRow("Format version", header.FormatVersion.ToString()));
@@ -547,8 +660,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         CurrentDatabaseTitleText = fileName;
         CurrentDatabaseDetailText = $"{header.PageCount} pages | root {header.RootPage} | format v{header.FormatVersion} | page size {header.PageSize}";
+        UpdateTreeSummaryText();
+        RebuildTreePageVisits();
+        LogDebug($"Loaded header for {fileName}: pages={header.PageCount}, root={header.RootPage}, format=v{header.FormatVersion}, page_size={header.PageSize}.");
 
         return header;
+    }
+
+    private async Task<TosumuInspectTreePayload> LoadTreeAsync(string path, TosumuInspectUnlockOptions? unlock)
+    {
+        treeSnapshot = await GetCli().GetTreeAsync(path, unlock);
+        treeRootPageNumber = treeSnapshot.RootPgno;
+        QueueTreeWebViewRender();
+        LogDebug($"Loaded tree snapshot rooted at page {treeSnapshot.RootPgno}.");
+        return treeSnapshot;
     }
 
     private async Task<TosumuInspectVerifyPayload> LoadVerifyAsync(string path, TosumuInspectUnlockOptions? unlock)
@@ -596,6 +721,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             VerifyIssueSummaryVisibility = Visibility.Visible;
             VerifyIssueSummaryBrush = ResolveThemeBrush("SuccessSoftBrush", Brushes.Honeydew);
             VerifyIssueSummaryText = $"Verified clean across {verify.PagesChecked} pages. No integrity or auth failures were reported.";
+            TreeTrustText = $"Trust: verified clean across {verify.PagesChecked} pages.";
         }
         else
         {
@@ -608,7 +734,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             VerifyIssueSummaryText = firstIssue is null
                 ? $"Verification reported {verify.IssueCount} issue(s). Review the page results below for detail."
                 : $"First issue on page {firstIssue.Pgno}: {firstIssue.Description}";
+            TreeTrustText = verify.IssueCount == 1
+                ? "Trust: verification found 1 issue."
+                : $"Trust: verification found {verify.IssueCount} issues.";
         }
+
+        LogDebug($"Verification completed: pages_checked={verify.PagesChecked}, pages_ok={verify.PagesOk}, issues={verify.IssueCount}, btree_ok={verify.Btree.Ok}.");
 
         return verify;
     }
@@ -616,6 +747,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async Task LoadPageAsync(string path, ulong pageNumber, TosumuInspectUnlockOptions? unlock)
     {
         var page = await GetCli().GetPageAsync(path, pageNumber, unlock);
+        treeFocusPageNumber = page.Pgno;
+        treeFocusPageTypeName = page.PageTypeName;
+        TrackTreePageVisit(page.Pgno, page.PageTypeName);
 
         PageSummaryText =
             $"Page {page.Pgno} · {page.PageTypeName} (0x{page.PageType:X2})\n" +
@@ -647,6 +781,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             SelectPageRecord(PageRecords.FirstOrDefault(record => !record.IsPlaceholder));
         }
+
+        LogDebug($"Loaded page {page.Pgno}: type={page.PageTypeName}, version={page.PageVersion}, slots={page.SlotCount}, records={page.Records.Count}.");
     }
 
     private async Task LoadProtectorsAsync(string path)
@@ -665,6 +801,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 ProtectorSlots.Add(new ProtectorSlotRow(slot.Slot.ToString(), slot.Kind, slot.KindByte.ToString()));
             }
         }
+
+        LogDebug($"Loaded protectors: slots={protectors.SlotCount}.");
     }
 
     private bool TryGetValidDatabasePath(out string path)
@@ -785,7 +923,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         PrepareForDatabaseSelection(path);
 
-        await RunBusyActionAsync(async () =>
+        await RunBusyActionAsync("open selected database", async () =>
         {
             StatusText = $"Opening {Path.GetFileName(path)}...";
             AddRecentDatabasePath(path);
@@ -808,6 +946,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ResetVerifyState();
         ResetPageState();
         ResetProtectorsState();
+        ResetTreeInspectorState();
     }
 
     private void ResetHeaderState(string message)
@@ -822,6 +961,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         VerifyIssueSummaryVisibility = Visibility.Visible;
         VerifyIssueSummaryBrush = ResolveThemeBrush("WarningSoftBrush", Brushes.Khaki);
         VerifyIssueSummaryText = "Verification has not run yet. You will be prompted only if credentials are required, then the first auth or integrity problem will surface here.";
+        TreeTrustText = "Trust: verify pending.";
         VerifyIssues.Clear();
         VerifyIssues.Add(new VerifyIssueRow("-", "Run verification to surface integrity or auth problems.", HasIssue: false, IsPlaceholder: true));
         PageResults.Clear();
@@ -836,6 +976,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         SelectPageRecord(null);
     }
 
+    private void ResetTreeInspectorState()
+    {
+        treeSnapshot = null;
+        treeRootPageNumber = null;
+        treeFocusPageNumber = null;
+        treeFocusPageTypeName = string.Empty;
+        treePageVisitStates.Clear();
+
+        TreeRootText = "Root page: load a database header to discover the tree root.";
+        TreeFocusText = "Focus page: inspect root or another page to begin tree navigation.";
+        TreeTrustText = "Trust: verify pending.";
+
+        RebuildTreePageVisits();
+    }
+
     private void SelectPageNumberFromRow(string pgnoText, string sourceLabel)
     {
         if (!ulong.TryParse(pgnoText, out var pageNumber))
@@ -845,6 +1000,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         PageNumberText = pageNumber.ToString();
         StatusText = $"Selected page {pageNumber} from {sourceLabel}. Double-click to inspect it.";
+        LogDebug($"Selected page {pageNumber} from {sourceLabel}.");
     }
 
     private async Task InspectSelectedPageFromRowAsync(string pgnoText, string sourceLabel)
@@ -866,7 +1022,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         PageNumberText = pageNumber.ToString();
 
-        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        await RunUnlockableInspectActionAsync($"inspect page {pageNumber} from {sourceLabel}", unlockSelection, async unlock =>
         {
             StatusText = $"Inspecting page {pageNumber} from the {sourceLabel}...";
             AddRecentDatabasePath(path);
@@ -884,6 +1040,316 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         KeyHexColumn.Width = ShowHexColumns ? KeyHexColumnVisibleWidth : 0;
         ValueHexColumn.Width = ShowHexColumns ? ValueHexColumnVisibleWidth : 0;
+    }
+
+    private void TrackTreePageVisit(ulong pageNumber, string pageTypeName)
+    {
+        treePageVisitStates.RemoveAll(entry => entry.PageNumber == pageNumber);
+        treePageVisitStates.Insert(0, new TreePageVisitState(pageNumber, pageTypeName));
+
+        while (treePageVisitStates.Count > MaxTreePageHistoryCount)
+        {
+            treePageVisitStates.RemoveAt(treePageVisitStates.Count - 1);
+        }
+
+        UpdateTreeSummaryText();
+        RebuildTreePageVisits();
+    }
+
+    private void UpdateTreeSummaryText()
+    {
+        TreeRootText = treeRootPageNumber is ulong rootPage
+            ? $"Root page {rootPage} · {DescribeTreeNode(rootPage, rootPage == treeFocusPageNumber ? treeFocusPageTypeName : null)}"
+            : "Root page: load a database header to discover the tree root.";
+
+        if (treeFocusPageNumber is ulong focusPage)
+        {
+            TreeFocusText = $"Focus page {focusPage} · {DescribeTreeNode(focusPage, treeFocusPageTypeName)}";
+        }
+        else if (treeRootPageNumber is ulong root)
+        {
+            TreeFocusText = $"Focus page: inspect root {root} or another page to begin tree navigation.";
+        }
+        else
+        {
+            TreeFocusText = "Focus page: inspect root or another page to begin tree navigation.";
+        }
+    }
+
+    private void RebuildTreePageVisits()
+    {
+        TreePageVisits.Clear();
+
+        if (treePageVisitStates.Count == 0)
+        {
+            TreePageVisits.Add(new TreePageVisitRow("-", "No tree pages inspected yet.", "Inspect root to begin.", true));
+            return;
+        }
+
+        foreach (var entry in treePageVisitStates)
+        {
+            var relation = entry.PageNumber == treeFocusPageNumber
+                ? entry.PageNumber == treeRootPageNumber ? "Root focus" : "Focus"
+                : entry.PageNumber == treeRootPageNumber ? "Root" : "Visited";
+
+            TreePageVisits.Add(new TreePageVisitRow(
+                entry.PageNumber.ToString(),
+                DescribeTreeNode(entry.PageNumber, entry.PageTypeName),
+                relation,
+                false));
+        }
+
+        QueueTreeWebViewRender();
+    }
+
+    private void QueueTreeWebViewRender()
+    {
+        _ = RenderTreeWebViewAsync();
+    }
+
+    private async Task EnsureTreeWebViewInitializedAsync()
+    {
+        if (TreeWebView is null)
+        {
+            return;
+        }
+
+        treeWebViewInitializationTask ??= InitializeTreeWebViewCoreAsync();
+        await treeWebViewInitializationTask;
+    }
+
+    private async Task InitializeTreeWebViewCoreAsync()
+    {
+        if (TreeWebView is null)
+        {
+            return;
+        }
+
+        var htmlPath = Path.Combine(AppContext.BaseDirectory, "Assets", "TreeView", "tree-view.html");
+        if (!File.Exists(htmlPath))
+        {
+            LogDebug($"Tree view asset missing: {htmlPath}");
+            return;
+        }
+
+        await TreeWebView.EnsureCoreWebView2Async();
+
+        if (TreeWebView.CoreWebView2 is null)
+        {
+            LogDebug("Tree WebView2 runtime was not available.");
+            return;
+        }
+
+        TreeWebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+        TreeWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+        TreeWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        TreeWebView.CoreWebView2.WebMessageReceived += TreeWebView_OnWebMessageReceived;
+
+        var navigationCompletion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void HandleNavigationCompleted(object? _, CoreWebView2NavigationCompletedEventArgs args)
+        {
+            TreeWebView.NavigationCompleted -= HandleNavigationCompleted;
+            navigationCompletion.TrySetResult(args.IsSuccess);
+        }
+
+        TreeWebView.NavigationCompleted += HandleNavigationCompleted;
+        TreeWebView.Source = new Uri(htmlPath);
+
+        var navigationSucceeded = await navigationCompletion.Task;
+        LogDebug(navigationSucceeded
+            ? $"Initialized D3 tree view from {htmlPath}."
+            : $"Tree view navigation reported failure for {htmlPath}.");
+    }
+
+    private async Task RenderTreeWebViewAsync()
+    {
+        try
+        {
+            await EnsureTreeWebViewInitializedAsync();
+
+            if (TreeWebView?.CoreWebView2 is null)
+            {
+                return;
+            }
+
+            var payload = BuildTreeWebViewPayload();
+            var json = JsonSerializer.Serialize(payload, TreeWebViewJsonOptions);
+            await TreeWebView.ExecuteScriptAsync($"window.renderTree({json});");
+        }
+        catch (Exception ex)
+        {
+            LogException("render D3 tree view", ex);
+        }
+    }
+
+    private TreeWebViewPayload BuildTreeWebViewPayload()
+    {
+        if (treeSnapshot is not null)
+        {
+            return new TreeWebViewPayload(
+                treeSnapshot.RootPgno,
+                treeFocusPageNumber,
+                TreeTrustText,
+                BuildTreeWebViewNode(treeSnapshot.Root, relationLabel: null, separatorKeyHex: null));
+        }
+
+        var rootNode = treeRootPageNumber is ulong rootPage
+            ? new TreeWebViewNode(
+                $"Page {rootPage}",
+                DescribeTreeNode(rootPage, rootPage == treeFocusPageNumber ? treeFocusPageTypeName : null),
+                rootPage == treeFocusPageNumber ? "root-focus" : "root",
+                rootPage,
+                [])
+            : new TreeWebViewNode(
+                "Root pending",
+                "Load a header to discover the root page.",
+                "synthetic",
+                null,
+                []);
+
+        var observedNodes = treePageVisitStates
+            .Where(entry => entry.PageNumber != treeRootPageNumber)
+            .Select(entry => new TreeWebViewNode(
+                $"Page {entry.PageNumber}",
+                $"{GetTreeRelationLabel(entry.PageNumber)} · {DescribeTreeNode(entry.PageNumber, entry.PageTypeName)}",
+                entry.PageNumber == treeFocusPageNumber ? "focus" : "visited",
+                entry.PageNumber,
+                []))
+            .ToList();
+
+        var topLevelNodes = new List<TreeWebViewNode> { rootNode };
+        if (observedNodes.Count > 0)
+        {
+            topLevelNodes.Add(new TreeWebViewNode(
+                "Observed pages",
+                $"{observedNodes.Count} inspected page{(observedNodes.Count == 1 ? string.Empty : "s")}",
+                "synthetic",
+                null,
+                observedNodes));
+        }
+
+        return new TreeWebViewPayload(
+            treeRootPageNumber,
+            treeFocusPageNumber,
+            TreeTrustText,
+            new TreeWebViewNode(
+                "Tree Inspector",
+                "Observed root, focus, and inspected pages",
+                "synthetic",
+                null,
+                topLevelNodes));
+    }
+
+    private TreeWebViewNode BuildTreeWebViewNode(
+        TosumuInspectTreeNodePayload node,
+        string? relationLabel,
+        string? separatorKeyHex)
+    {
+        var relationPrefix = string.IsNullOrWhiteSpace(relationLabel) ? string.Empty : relationLabel + " · ";
+        var separatorSuffix = string.IsNullOrWhiteSpace(separatorKeyHex) ? string.Empty : $" · sep {ShortHex(separatorKeyHex)}";
+        var nextLeafSuffix = node.NextLeaf is ulong nextLeaf ? $" · next {nextLeaf}" : string.Empty;
+        var meta = $"{relationPrefix}{node.PageTypeName} · slots {node.SlotCount}{separatorSuffix}{nextLeafSuffix}";
+
+        return new TreeWebViewNode(
+            $"Page {node.Pgno}",
+            meta,
+            GetTreeVisualKind(node.Pgno, node.PageTypeName),
+            node.Pgno,
+            node.Children.Select(child => BuildTreeWebViewNode(
+                child.Child,
+                child.Relation,
+                child.SeparatorKeyHex)).ToList());
+    }
+
+    private string GetTreeVisualKind(ulong pgno, string pageTypeName)
+    {
+        if (pgno == treeRootPageNumber && pgno == treeFocusPageNumber)
+        {
+            return "root-focus";
+        }
+
+        if (pgno == treeRootPageNumber)
+        {
+            return "root";
+        }
+
+        if (pgno == treeFocusPageNumber)
+        {
+            return "focus";
+        }
+
+        return "visited";
+    }
+
+    private static string ShortHex(string hex)
+    {
+        return hex.Length <= 12 ? hex : hex[..12] + "...";
+    }
+
+    private string GetTreeRelationLabel(ulong pageNumber)
+    {
+        return pageNumber == treeFocusPageNumber
+            ? pageNumber == treeRootPageNumber ? "Root focus" : "Focus"
+            : pageNumber == treeRootPageNumber ? "Root" : "Visited";
+    }
+
+    private void TreeWebView_OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(e.WebMessageAsJson);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("type", out var typeElement) || typeElement.GetString() != "selectPage")
+            {
+                return;
+            }
+
+            if (!root.TryGetProperty("pageNumber", out var pageElement) || pageElement.ValueKind != JsonValueKind.Number)
+            {
+                return;
+            }
+
+            if (!pageElement.TryGetUInt64(out var pageNumber))
+            {
+                return;
+            }
+
+            PageNumberText = pageNumber.ToString();
+            StatusText = $"Selected page {pageNumber} from the D3 tree view. Inspect page to decode it.";
+            LogDebug($"Selected page {pageNumber} from the D3 tree view.");
+        }
+        catch (Exception ex)
+        {
+            LogException("handle D3 tree selection", ex);
+        }
+    }
+
+    private string DescribeTreeNode(ulong pageNumber, string? pageTypeName)
+    {
+        var label = pageTypeName switch
+        {
+            "Leaf" => "leaf node",
+            "Internal" => "internal node",
+            "Overflow" => "overflow page",
+            "Free" => "free page",
+            null or "" => pageNumber == treeRootPageNumber ? "root page" : "page",
+            _ => $"{pageTypeName.ToLowerInvariant()} page",
+        };
+
+        if (pageNumber != treeRootPageNumber)
+        {
+            return char.ToUpperInvariant(label[0]) + label[1..];
+        }
+
+        return label switch
+        {
+            "leaf node" => "Root leaf node",
+            "internal node" => "Root internal node",
+            "overflow page" => "Root overflow page",
+            "free page" => "Root free page",
+            _ => "Root page",
+        };
     }
 
     private Brush ResolveThemeBrush(string resourceKey, Brush fallback)
@@ -985,17 +1451,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return true;
     }
 
-    private async Task RunBusyActionAsync(Func<Task> action)
+    private async Task RunBusyActionAsync(string operationName, Func<Task> action)
     {
         SetBusy(true);
+        LogDebug($"Starting {operationName}.");
 
         try
         {
             await action();
+            LogDebug($"Completed {operationName}.");
+        }
+        catch (TosumuInspectCommandException ex)
+        {
+            StatusText = "Last command failed.";
+            LogInspectFailure(operationName, ex);
+            MessageBox.Show(this, ex.Message, "Tosumu Harness", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         catch (Exception ex)
         {
             StatusText = "Last command failed.";
+            LogException(operationName, ex);
             MessageBox.Show(this, ex.Message, "Tosumu Harness", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
@@ -1121,6 +1596,78 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+
+    private void LogDebug(string message)
+    {
+        debugLogBuffer.Enqueue($"{DateTime.Now:HH:mm:ss.fff}  {message}");
+    }
+
+    private void FlushDebugLog()
+    {
+        if (DebugLogTextBox is null || DebugLogScrollViewer is null || debugLogBuffer.IsEmpty)
+        {
+            return;
+        }
+
+        var text = new StringBuilder();
+        while (debugLogBuffer.TryDequeue(out var line))
+        {
+            text.AppendLine(line);
+        }
+
+        if (DebugLogTextBox.Text.Length > MaxDebugLogChars)
+        {
+            DebugLogTextBox.Clear();
+            DebugLogTextBox.AppendText($"{DateTime.Now:HH:mm:ss.fff}  [debug] Cleared previous output after reaching {MaxDebugLogChars} characters.{Environment.NewLine}");
+        }
+
+        DebugLogTextBox.AppendText(text.ToString());
+        DebugLogScrollViewer.ScrollToEnd();
+    }
+
+    private void LogInspectFailure(string operationName, TosumuInspectCommandException ex)
+    {
+        var pgnoText = ex.Pgno is ulong pgno ? $", pgno={pgno}" : string.Empty;
+        LogDebug($"{operationName} failed: command={ex.Command}, kind={ex.ErrorKind ?? "unknown"}, exit={ex.ExitCode}{pgnoText}, message={FlattenForLog(ex.Message)}");
+
+        if (!string.IsNullOrWhiteSpace(ex.StandardError))
+        {
+            LogDebug($"stderr: {FlattenForLog(ex.StandardError)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(ex.StandardOutput))
+        {
+            LogDebug($"stdout: {FlattenForLog(ex.StandardOutput)}");
+        }
+    }
+
+    private void LogException(string operationName, Exception ex)
+    {
+        LogDebug($"{operationName} failed with {ex.GetType().Name}: {FlattenForLog(ex.Message)}");
+    }
+
+    private static string DescribeUnlockSelection(HarnessUnlockSelection? unlockSelection)
+    {
+        return unlockSelection?.Mode switch
+        {
+            HarnessUnlockModes.Passphrase => "passphrase",
+            HarnessUnlockModes.RecoveryKey => "recovery-key",
+            HarnessUnlockModes.Keyfile => "keyfile",
+            _ => "auto",
+        };
+    }
+
+    private static string FlattenForLog(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "(empty)";
+        }
+
+        var flattened = text.Replace("\r", string.Empty).Replace("\n", " | ").Trim();
+        return flattened.Length <= 800 ? flattened : flattened[..800] + "...";
+    }
+
     private void ApplyUnlockSelection(HarnessUnlockSelection? unlockSelection)
     {
         SelectUnlockMode(unlockSelection?.Mode ?? HarnessUnlockModes.Auto);
@@ -1210,3 +1757,18 @@ public sealed record PageVerifyRow(string Pgno, string AuthOkLabel, string PageV
 public sealed record PageRecordRow(string Kind, string Slot, string RecordType, string KeyPreview, string KeyHex, string ValuePreview, string ValueHex, bool IsPlaceholder);
 
 public sealed record ProtectorSlotRow(string Slot, string Kind, string KindByte);
+
+public sealed record TreePageVisitRow(string Page, string Node, string Relation, bool IsPlaceholder);
+
+public sealed record TreeWebViewPayload(
+    ulong? RootPageNumber,
+    ulong? FocusPageNumber,
+    string TrustText,
+    TreeWebViewNode Hierarchy);
+
+public sealed record TreeWebViewNode(
+    string Label,
+    string Meta,
+    string VisualKind,
+    ulong? PageNumber,
+    IReadOnlyList<TreeWebViewNode> Children);

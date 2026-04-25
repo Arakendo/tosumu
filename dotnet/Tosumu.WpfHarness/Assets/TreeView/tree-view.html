@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tosumu Tree View</title>
+  <script src="./d3.v7.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6efe3;
+      --panel: #fffaf2;
+      --ink: #17323a;
+      --muted: #6e8086;
+      --border: #d7cfc0;
+      --link: #8ba3a9;
+      --root: #1f5663;
+      --focus: #b36a28;
+      --visited: #cfdfe3;
+      --synthetic: #edf4f5;
+      --textOnDark: #f9fbfb;
+    }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Bahnschrift, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    #app {
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      height: 100%;
+      gap: 8px;
+      padding: 10px;
+      box-sizing: border-box;
+    }
+
+    #summary {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      border-radius: 999px;
+      padding: 5px 10px;
+      background: #ebf3f4;
+      color: var(--ink);
+      border: 1px solid rgba(23, 50, 58, 0.08);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    #caption {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    #viewport {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+      overflow: hidden;
+      position: relative;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    svg:active {
+      cursor: grabbing;
+    }
+
+    .link {
+      fill: none;
+      stroke: var(--link);
+      stroke-width: 2;
+      stroke-linecap: round;
+      opacity: 0.85;
+    }
+
+    .node rect {
+      stroke: rgba(23, 50, 58, 0.14);
+      stroke-width: 1;
+    }
+
+    .node text {
+      pointer-events: none;
+    }
+
+    .node--page {
+      cursor: pointer;
+    }
+
+    .node--page:hover rect {
+      stroke: rgba(23, 50, 58, 0.45);
+      stroke-width: 1.5;
+    }
+
+    .label {
+      font-size: 13px;
+      font-weight: 700;
+      fill: var(--ink);
+    }
+
+    .meta {
+      font-size: 11px;
+      fill: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="summary"></div>
+    <div id="caption">Tree topology from inspect-tree JSON. Click a node to sync the page field in the harness. Drag to pan and use the mouse wheel to zoom.</div>
+    <div id="viewport"></div>
+  </div>
+
+  <script>
+    const summary = document.getElementById('summary');
+    const viewport = document.getElementById('viewport');
+
+    function pickFill(node) {
+      if (node.data.visualKind === 'root-focus') return '#1f5663';
+      if (node.data.visualKind === 'root') return '#2b6976';
+      if (node.data.visualKind === 'focus') return '#d59b61';
+      if (node.data.visualKind === 'visited') return '#dbe7ea';
+      return '#eef4f4';
+    }
+
+    function pickText(node) {
+      return node.data.visualKind === 'root-focus' || node.data.visualKind === 'root'
+        ? '#f9fbfb'
+        : '#17323a';
+    }
+
+    function postPageSelection(pageNumber) {
+      if (!pageNumber || !window.chrome || !window.chrome.webview) {
+        return;
+      }
+
+      window.chrome.webview.postMessage({ type: 'selectPage', pageNumber });
+    }
+
+    window.renderTree = function renderTree(payload) {
+      summary.innerHTML = '';
+      viewport.innerHTML = '';
+
+      const pills = [
+        payload.rootPageNumber ? `root ${payload.rootPageNumber}` : 'root unknown',
+        payload.focusPageNumber ? `focus ${payload.focusPageNumber}` : 'focus pending',
+        payload.trustText || 'verify pending',
+      ];
+
+      for (const text of pills) {
+        const pill = document.createElement('div');
+        pill.className = 'pill';
+        pill.textContent = text;
+        summary.appendChild(pill);
+      }
+
+      const width = viewport.clientWidth || 600;
+      const height = Math.max(viewport.clientHeight || 320, 320);
+      const nodeWidth = 220;
+      const nodeHeight = 58;
+      const padding = { top: 28, right: 40, bottom: 28, left: 38 };
+      const root = d3.hierarchy(payload.hierarchy);
+      const tree = d3.tree().nodeSize([96, 280]);
+      tree(root);
+
+      const nodes = root.descendants();
+      const links = root.links();
+      const xValues = nodes.map(node => node.x);
+      const yValues = nodes.map(node => node.y);
+      const minX = Math.min(...xValues);
+      const maxX = Math.max(...xValues);
+      const maxY = Math.max(...yValues);
+      const layoutWidth = maxY + nodeWidth + padding.left + padding.right;
+      const layoutHeight = (maxX - minX) + nodeHeight + padding.top + padding.bottom;
+      const fitScale = Math.min((width - 24) / layoutWidth, (height - 24) / layoutHeight);
+      const initialScale = Math.max(0.85, Math.min(1.2, fitScale));
+      const initialTranslateX = Math.max(12, (width - layoutWidth * initialScale) / 2);
+      const initialTranslateY = Math.max(12, (height - layoutHeight * initialScale) / 2);
+
+      const svg = d3.create('svg')
+        .attr('viewBox', [0, 0, width, height])
+        .attr('preserveAspectRatio', 'xMidYMid meet');
+
+      const zoomLayer = svg.append('g');
+
+      const g = zoomLayer.append('g')
+        .attr('transform', `translate(${padding.left},${padding.top - minX})`);
+
+      g.append('g')
+        .selectAll('path')
+        .data(links)
+        .join('path')
+        .attr('class', 'link')
+        .attr('d', d3.linkHorizontal().x(link => link.y).y(link => link.x));
+
+      const node = g.append('g')
+        .selectAll('g')
+        .data(nodes)
+        .join('g')
+        .attr('class', data => data.data.pageNumber ? 'node node--page' : 'node')
+        .attr('transform', data => `translate(${data.y},${data.x})`)
+        .on('click', (_, data) => postPageSelection(data.data.pageNumber));
+
+      node.append('rect')
+        .attr('x', -2)
+        .attr('y', -22)
+        .attr('width', nodeWidth)
+        .attr('height', nodeHeight)
+        .attr('rx', 10)
+        .attr('ry', 10)
+        .attr('fill', data => pickFill(data));
+
+      node.append('text')
+        .attr('class', 'label')
+        .attr('x', 14)
+        .attr('y', -1)
+        .attr('fill', data => pickText(data))
+        .text(data => data.data.label);
+
+      node.append('text')
+        .attr('class', 'meta')
+        .attr('x', 14)
+        .attr('y', 18)
+        .attr('fill', data => pickText(data))
+        .text(data => data.data.meta || '');
+
+      const zoom = d3.zoom()
+        .scaleExtent([0.6, 2.75])
+        .on('zoom', event => {
+          zoomLayer.attr('transform', event.transform);
+        });
+
+      svg.call(zoom);
+      svg.call(
+        zoom.transform,
+        d3.zoomIdentity.translate(initialTranslateX, initialTranslateY).scale(initialScale)
+      );
+
+      viewport.appendChild(svg.node());
+    };
+
+    window.renderTree({
+      rootPageNumber: null,
+      focusPageNumber: null,
+      trustText: 'verify pending',
+      hierarchy: {
+        label: 'Tree pending',
+        meta: 'load a header and inspect pages',
+        visualKind: 'synthetic',
+        children: [],
+      },
+    });
+  </script>
+</body>
+</html>
