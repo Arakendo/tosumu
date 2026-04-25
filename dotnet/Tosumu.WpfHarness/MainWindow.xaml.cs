@@ -169,6 +169,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         });
     }
 
+    private async void InspectRootPageButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetValidDatabasePath(out var path))
+        {
+            return;
+        }
+
+        if (!TryGetUnlockSelection("inspect the root page", out var unlockSelection))
+        {
+            return;
+        }
+
+        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        {
+            StatusText = "Loading header and root page...";
+            AddRecentDatabasePath(path);
+
+            var header = await LoadHeaderAsync(path);
+            PageNumberText = header.RootPage.ToString();
+            await LoadPageAsync(path, header.RootPage, unlock);
+
+            StatusText = $"Loaded root page {header.RootPage} from {System.IO.Path.GetFileName(path)}.";
+        });
+    }
+
     private async void RefreshAllButton_OnClick(object sender, RoutedEventArgs e)
     {
         if (!TryGetValidDatabasePath(out var path))
@@ -308,7 +333,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         return cli;
     }
 
-    private async Task LoadHeaderAsync(string path)
+    private async Task<TosumuInspectHeaderPayload> LoadHeaderAsync(string path)
     {
         var header = await GetCli().GetHeaderAsync(path);
 
@@ -326,6 +351,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         HeaderRows.Add(new HeaderFieldRow("Keyslot region pages", header.KeyslotRegionPages.ToString()));
         HeaderRows.Add(new HeaderFieldRow("Slot 0 kind", $"{header.Slot0.Kind} ({header.Slot0.KindByte})"));
         HeaderRows.Add(new HeaderFieldRow("Slot 0 version", header.Slot0.Version.ToString()));
+
+        return header;
     }
 
     private async Task LoadVerifyAsync(string path, TosumuInspectUnlockOptions? unlock)
@@ -545,6 +572,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         BrowseButton.IsEnabled = !isBusy;
         BrowseKeyfileButton.IsEnabled = !isBusy;
         InspectProtectorsButton.IsEnabled = !isBusy;
+        InspectRootPageButton.IsEnabled = !isBusy;
         RefreshAllButton.IsEnabled = !isBusy;
         InspectPageButton.IsEnabled = !isBusy;
         LoadHeaderButton.IsEnabled = !isBusy;

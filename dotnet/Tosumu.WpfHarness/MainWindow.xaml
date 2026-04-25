@@ -188,12 +188,13 @@
                 </Grid>
 
                 <Grid Grid.Row="3"
-                        Grid.ColumnSpan="6"
+                                            Grid.ColumnSpan="6"
                       Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="160" />
                         <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
@@ -220,12 +221,19 @@
                             Click="InspectPageButton_OnClick"
                             Content="Inspect Page" />
 
-                    <TextBlock Grid.Column="3"
+                        <Button x:Name="InspectRootPageButton"
+                            Grid.Column="3"
+                            Margin="12,0,0,0"
+                            Padding="16,10"
+                            Click="InspectRootPageButton_OnClick"
+                            Content="Inspect Root Page" />
+
+                        <TextBlock Grid.Column="4"
                                Margin="16,0,0,0"
                                VerticalAlignment="Center"
                                TextWrapping="Wrap"
                                Foreground="{StaticResource MutedTextBrush}"
-                               Text="Use the same unlock mode as verify when inspecting encrypted pages." />
+                               Text="Use the same unlock mode as verify when inspecting encrypted pages. Root page inspection reloads the header first so the page number stays aligned with the current file." />
                 </Grid>
 
                 <Grid Grid.Row="4"
