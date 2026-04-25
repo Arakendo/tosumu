@@ -447,7 +447,7 @@ impl Pager {
     /// Prefer `with_page` for normal reads; this is for inspection tooling that
     /// also needs the page_version field.
     pub fn read_page(&self, pgno: u64) -> Result<([u8; PAGE_PLAINTEXT_SIZE], u64)> {
-        assert!(pgno != 0, "pgno 0 is the file header, not an encrypted page");
+        self.validate_data_pgno(pgno)?;
         let frame = self.read_frame(pgno)?;
         decrypt_page(&self.page_key, pgno, &frame)
     }
@@ -460,7 +460,7 @@ impl Pager {
     where
         F: FnOnce(&[u8; PAGE_PLAINTEXT_SIZE]) -> Result<T>,
     {
-        assert!(pgno != 0, "pgno 0 is the file header, not an encrypted page");
+        self.validate_data_pgno(pgno)?;
         // Read-your-own-writes: check dirty buffer first when inside a transaction.
         let frame = if let Some(pos) = self.dirty_pages.iter().rposition(|(p, _)| *p == pgno) {
             *self.dirty_pages[pos].1
@@ -484,7 +484,7 @@ impl Pager {
     where
         F: FnOnce(&mut [u8; PAGE_PLAINTEXT_SIZE]) -> Result<()>,
     {
-        assert!(pgno != 0, "pgno 0 is the file header, not an encrypted page");
+        self.validate_data_pgno(pgno)?;
 
         // For reads: check dirty buffer first (read-your-own-writes).
         let frame = if let Some(pos) = self.dirty_pages.iter().rposition(|(p, _)| *p == pgno) {
@@ -523,19 +523,32 @@ impl Pager {
         Ok(())
     }
 
-    /// Allocate a new page. Returns its page number.
+    /// Allocate and initialise a new page. Returns its page number.
+    ///
+    /// The page frame is written to disk *before* `page_count` is incremented
+    /// and the header is flushed. A crash after the frame write but before the
+    /// header flush leaves `page_count` unchanged, so the new page is simply
+    /// unreachable on recovery — no partial state is visible.
     ///
     /// For MVP+1 the freelist is not yet checked; pages grow monotonically.
-    pub fn allocate(&mut self) -> Result<u64> {
+    pub fn allocate(&mut self, page_type: u8) -> Result<u64> {
         let pgno = self.page_count;
+        // Write the initialised frame first, so the file is extended before
+        // page_count advertises the new page.
+        self.init_page(pgno, page_type)?;
         self.page_count += 1;
         self.flush_header()?;
         Ok(pgno)
     }
 
     /// Initialize a newly allocated page and write it to disk.
+    ///
+    /// `pgno` must be > 0 and <= `page_count` (i.e. the next page to be
+    /// allocated, or an existing page being re-initialised).
     pub fn init_page(&mut self, pgno: u64, page_type: u8) -> Result<()> {
-        assert!(pgno != 0);
+        if pgno == 0 || pgno > self.page_count {
+            return Err(TosumError::InvalidArgument("invalid page number for initialization"));
+        }
         let mut plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
         // Set page header: type, free_start, free_end.
         plaintext[0] = page_type;
@@ -629,6 +642,19 @@ impl Pager {
 
     // ── private ──────────────────────────────────────────────────────────────
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Validate that `pgno` is a data page: non-zero and within the allocated range.
+    fn validate_data_pgno(&self, pgno: u64) -> Result<()> {
+        if pgno == 0 {
+            return Err(TosumError::InvalidArgument("page 0 is the file header, not a data page"));
+        }
+        if pgno >= self.page_count {
+            return Err(TosumError::InvalidArgument("page number out of range"));
+        }
+        Ok(())
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn read_raw_frame(&self, pgno: u64) -> Result<[u8; PAGE_SIZE]> {
         self.read_frame(pgno)
@@ -637,9 +663,8 @@ impl Pager {
     fn read_frame(&self, pgno: u64) -> Result<[u8; PAGE_SIZE]> {
         let mut frame = [0u8; PAGE_SIZE];
         let offset = pgno * PAGE_SIZE as u64;
-        // Need interior mutability to seek — cast the shared ref to mut via a re-open
-        // workaround: File::seek requires &mut self, so we use try_clone.
-        // This is acceptable for MVP+1 (no cache, rare).
+        // File::seek needs &mut File. For MVP+1, clone the handle for reads
+        // instead of adding interior mutability or a page cache.
         let mut f = self.file.try_clone()?;
         f.seek(SeekFrom::Start(offset))?;
         f.read_exact(&mut frame)?;
@@ -809,6 +834,17 @@ fn finish_open(
     path: &Path,
 ) -> Result<Pager> {
     let page_count = read_u64(page0, OFF_PAGE_COUNT);
+
+    // Sanity-check the file length against the advertised page count.
+    // A truncated file means the header is lying; reject rather than trust it.
+    let file_len = file.metadata()?.len();
+    let expected_len = page_count
+        .checked_mul(PAGE_SIZE as u64)
+        .ok_or(TosumError::Corrupt { pgno: 0, reason: "page_count overflow" })?;
+    if file_len < expected_len {
+        return Err(TosumError::Corrupt { pgno: 0, reason: "file is truncated" });
+    }
+
     let freelist_head = read_u64(page0, OFF_FREELIST_HEAD);
     let root_page = read_u64(page0, OFF_ROOT_PAGE);
 
@@ -860,7 +896,14 @@ fn write_file_header(page0: &mut [u8; PAGE_SIZE], dek: &[u8; 32]) {
     let ks = KEYSLOT_REGION_OFFSET;
     page0[ks + KS_OFF_KIND] = KEYSLOT_KIND_SENTINEL;
     page0[ks + KS_OFF_VERSION] = 1;
-    // Store DEK plaintext in wrapped_dek[0..32] (Sentinel = no encryption).
-    // See DESIGN.md §8.11: Sentinel provides authentication, not confidentiality.
+    // Sentinel stores the DEK as plaintext in the wrapped_dek field — it is NOT
+    // wrapped. The field name is shared with encrypted protectors for layout
+    // compatibility. See DESIGN.md §8.11: Sentinel provides no confidentiality.
+    // Only the first 32 bytes are used (vs 48 for AEAD-wrapped DEKs).
+    //
+    // MVP+1 note: page 0 is trusted for magic/version/page-size checks only.
+    // Data pages are fully authenticated (AEAD + page_version). Page 0 fields
+    // such as page_count, freelist_head and root_page are not MAC'd in MVP+1;
+    // the header MAC is added for encrypted databases only (Passphrase/Recovery slots).
     page0[ks + KS_OFF_WRAPPED_DEK..ks + KS_OFF_WRAPPED_DEK + 32].copy_from_slice(dek);
 }

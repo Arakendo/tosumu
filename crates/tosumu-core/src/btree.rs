@@ -66,8 +66,7 @@ impl BTree {
     /// Create a new `.tsm` file with an empty B+ tree.
     pub fn create(path: &Path) -> Result<Self> {
         let mut pager = Pager::create(path)?;
-        let root_pgno = pager.allocate()?;
-        pager.init_page(root_pgno, PAGE_TYPE_LEAF)?;
+        let root_pgno = pager.allocate(PAGE_TYPE_LEAF)?;
         pager.set_root_page(root_pgno)?;
         Ok(BTree { pager })
     }
@@ -75,8 +74,7 @@ impl BTree {
     /// Create a new passphrase-encrypted `.tsm` file with an empty B+ tree.
     pub fn create_encrypted(path: &Path, passphrase: &str) -> Result<Self> {
         let mut pager = Pager::create_encrypted(path, passphrase)?;
-        let root_pgno = pager.allocate()?;
-        pager.init_page(root_pgno, PAGE_TYPE_LEAF)?;
+        let root_pgno = pager.allocate(PAGE_TYPE_LEAF)?;
         pager.set_root_page(root_pgno)?;
         Ok(BTree { pager })
     }
@@ -145,8 +143,7 @@ impl BTree {
         if let Some((promoted_key, new_pgno)) = self.insert_record(root, key, &record)? {
             // Root split — allocate a new root internal page.
             let old_root = root;
-            let new_root = self.pager.allocate()?;
-            self.pager.init_page(new_root, PAGE_TYPE_INTERNAL)?;
+            let new_root = self.pager.allocate(PAGE_TYPE_INTERNAL)?;
             self.pager.with_page_mut(new_root, |page| {
                 write_u64(page, HDR_LEFTMOST, old_root);
                 internal_slot_append(page, &promoted_key, new_pgno)
@@ -427,8 +424,7 @@ impl BTree {
         let split_key = records[mid].0.clone();
 
         // Allocate new leaf, write right half into it.
-        let new_pgno = self.pager.allocate()?;
-        self.pager.init_page(new_pgno, PAGE_TYPE_LEAF)?;
+        let new_pgno = self.pager.allocate(PAGE_TYPE_LEAF)?;
         let right: Vec<_> = records[mid..].to_vec();
         self.pager.with_page_mut(new_pgno, |page| {
             leaf_rewrite(page, old_next, &right)
@@ -462,8 +458,7 @@ impl BTree {
         let right_leftmost = entries[mid].1;
 
         // Right node: leftmost = entries[mid].right_child, slots = entries[mid+1..]
-        let new_pgno = self.pager.allocate()?;
-        self.pager.init_page(new_pgno, PAGE_TYPE_INTERNAL)?;
+        let new_pgno = self.pager.allocate(PAGE_TYPE_INTERNAL)?;
         let right: Vec<_> = entries[mid + 1..].to_vec();
         self.pager.with_page_mut(new_pgno, |page| {
             *page = [0u8; PAGE_PLAINTEXT_SIZE];
