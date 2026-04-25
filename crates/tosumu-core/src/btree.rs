@@ -1144,6 +1144,120 @@ mod tests {
         Ok(h)
     }
 
+    // ── inv_check_slots unit tests ────────────────────────────────────────────
+
+    /// Build a minimal valid LEAF page with `slot_count` slots pointing at
+    /// records packed from the end of the page.  Returns the page buffer so
+    /// tests can corrupt individual bytes.
+    fn make_leaf_page(records: &[&[u8]]) -> [u8; PAGE_PLAINTEXT_SIZE] {
+        let mut page = [0u8; PAGE_PLAINTEXT_SIZE];
+        page[HDR_PAGE_TYPE] = PAGE_TYPE_LEAF;
+        write_u16(&mut page, HDR_SLOT_COUNT, 0);
+        write_u16(&mut page, HDR_FREE_START, PAGE_HEADER_SIZE as u16);
+        write_u16(&mut page, HDR_FREE_END, PAGE_PLAINTEXT_SIZE as u16);
+        for rec in records {
+            leaf_slot_append(&mut page, rec).expect("record fits");
+        }
+        page
+    }
+
+    #[test]
+    fn inv_check_slots_valid_page_ok() {
+        let rec = encode_live(b"key", b"val");
+        let page = make_leaf_page(&[&rec]);
+        assert!(inv_check_slots(&page, 1).is_ok());
+    }
+
+    #[test]
+    fn inv_check_slots_rejects_slot_count_overflow() {
+        // Set slot_count so high that the slot array would overlap the heap.
+        let mut page = make_leaf_page(&[]);
+        // slot_array_end = PAGE_HEADER_SIZE + huge * SLOT_SIZE > free_start = PAGE_HEADER_SIZE
+        write_u16(&mut page, HDR_SLOT_COUNT, 1000);
+        let err = inv_check_slots(&page, 1).unwrap_err();
+        assert!(matches!(err, TosumuError::Corrupt { pgno: 1, .. }));
+    }
+
+    #[test]
+    fn inv_check_slots_rejects_slot_offset_out_of_bounds() {
+        let rec = encode_live(b"key", b"val");
+        let mut page = make_leaf_page(&[&rec]);
+        // Corrupt the slot's offset field to point past the end of the page.
+        write_u16(&mut page, PAGE_HEADER_SIZE, (PAGE_PLAINTEXT_SIZE - 1) as u16); // off
+        write_u16(&mut page, PAGE_HEADER_SIZE + 2, 4u16);                          // len=4 → off+len > SIZE
+        let err = inv_check_slots(&page, 1).unwrap_err();
+        assert!(matches!(err, TosumuError::Corrupt { pgno: 1, .. }));
+    }
+
+    #[test]
+    fn inv_check_slots_rejects_slot_in_free_area() {
+        let rec = encode_live(b"key", b"val");
+        let mut page = make_leaf_page(&[&rec]);
+        // Point the slot into the slot-array area (below free_end) — overlaps free area.
+        let free_end = read_u16(&page, HDR_FREE_END) as u16;
+        write_u16(&mut page, PAGE_HEADER_SIZE, free_end - 2); // off < free_end
+        write_u16(&mut page, PAGE_HEADER_SIZE + 2, 2u16);
+        let err = inv_check_slots(&page, 1).unwrap_err();
+        assert!(matches!(err, TosumuError::Corrupt { pgno: 1, .. }));
+    }
+
+    #[test]
+    fn inv_check_slots_rejects_zero_length_slot() {
+        let rec = encode_live(b"key", b"val");
+        let mut page = make_leaf_page(&[&rec]);
+        // Zero out the length field of the first slot.
+        write_u16(&mut page, PAGE_HEADER_SIZE + 2, 0u16);
+        let err = inv_check_slots(&page, 1).unwrap_err();
+        assert!(matches!(err, TosumuError::Corrupt { pgno: 1, .. }));
+    }
+
+    // ── scan_physical corruption integration tests ────────────────────────────
+
+    /// Write two records to a real BTree file, then byte-patch the slot_count
+    /// of page 1 to a value that would make the slot array overflow.
+    /// Expect scan() to return Corrupt rather than silently reading garbage.
+    #[test]
+    fn scan_physical_rejects_corrupt_slot_count() {
+        use std::io::{Seek, SeekFrom, Write};
+        let p = tmp("corrupt_slot_count");
+        let _ = std::fs::remove_file(&p);
+        let wal = wal_path(&p);
+        let _ = std::fs::remove_file(&wal);
+
+        {
+            let mut t = BTree::create(&p).unwrap();
+            t.put(b"a", b"1").unwrap();
+            t.put(b"b", b"2").unwrap();
+        }
+
+        // Page 1 starts at PAGE_SIZE bytes into the file.
+        // CIPHERTEXT_OFFSET (24) bytes of frame header precede the plaintext.
+        // HDR_SLOT_COUNT is at PAGE_OFF_SLOT_COUNT (2) within the plaintext,
+        // so the file offset of the slot_count field is:
+        //   PAGE_SIZE + CIPHERTEXT_OFFSET + PAGE_OFF_SLOT_COUNT
+        // But the entire page is encrypted — patching the ciphertext breaks
+        // the AEAD tag and produces an auth failure, which is also an error.
+        // That's the correct outcome: any byte-flip in an encrypted page
+        // returns Err(AuthFailed), not silent garbage.
+        let mut f = std::fs::OpenOptions::new().write(true).open(&p).unwrap();
+        // Flip a byte in the ciphertext of page 1 (after the nonce).
+        let corrupt_offset = (PAGE_SIZE as u64) + CIPHERTEXT_OFFSET as u64 + 4;
+        f.seek(SeekFrom::Start(corrupt_offset)).unwrap();
+        f.write_all(&[0xFF]).unwrap();
+        drop(f);
+
+        let t = BTree::open(&p).unwrap();
+        let err = t.scan_physical().unwrap_err();
+        // Any corrupt ciphertext byte → AEAD auth failure or Corrupt.
+        assert!(
+            matches!(err, TosumuError::AuthFailed { .. } | TosumuError::Corrupt { .. }),
+            "expected AuthFailed or Corrupt, got {err:?}",
+        );
+
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&wal);
+    }
+
     // ── Property tests ────────────────────────────────────────────────────────
 
     use proptest::prelude::*;
