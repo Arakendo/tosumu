@@ -238,6 +238,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = "Loading header...";
             AddRecentDatabasePath(path);
             var header = await LoadHeaderAsync(path);
+            if (ShouldAutoLoadTreeWithoutUnlock(header))
+            {
+                await LoadTreeAsync(path, unlock: null);
+            }
 
             StatusText = $"Loaded {System.IO.Path.GetFileName(path)}: {header.PageCount} pages, root page {header.RootPage}.";
         });
@@ -927,7 +931,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             StatusText = $"Opening {Path.GetFileName(path)}...";
             AddRecentDatabasePath(path);
-            await LoadHeaderAsync(path);
+            var header = await LoadHeaderAsync(path);
+            if (ShouldAutoLoadTreeWithoutUnlock(header))
+            {
+                await LoadTreeAsync(path, unlock: null);
+            }
             StatusText = completionStatus;
         });
     }
@@ -1438,6 +1446,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
 
         return $"{fileName} verification completed with {verify.IssueCount} reported issue(s).";
+    }
+
+    private static bool ShouldAutoLoadTreeWithoutUnlock(TosumuInspectHeaderPayload header)
+    {
+        return string.Equals(header.Slot0.Kind, "Sentinel", StringComparison.Ordinal);
     }
 
     private bool TryGetPageNumber(out ulong pageNumber)
