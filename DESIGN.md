@@ -4817,3 +4817,172 @@ A remote peer doesn't just receive data. It receives data plus the proof context
 ### 30.9 Design principle
 
 > Tosumu is sync-shaped, not a sync engine. Every write leaves a breadcrumb. Future sync is a reader of those breadcrumbs, not an interpreter of physical storage.
+
+---
+
+## 31. Typed value model and column claims (Stage 5+)
+
+### 31.1 Why not "all strings"
+
+Storing every value as a UTF-8 string is tempting: no type migrations, no hard failures on insert. The cost is that the database stops knowing what anything means.
+
+```
+"100" < "2"          — lexicographic order breaks numeric range queries
+"true", "True", "1"  — boolean identity becomes the app's problem
+"42"                 — is this an integer, a product code, a price?
+```
+
+The appeal is really migration flexibility, not simplicity. There is a better way to get that flexibility without surrendering meaning.
+
+### 31.2 The typed value model
+
+Tosumu uses a small tagged value type. All values carry an explicit type tag on disk:
+
+```
+Value =
+  Null
+  Bool
+  Int64
+  Float64
+  Text
+  Bytes
+```
+
+On-disk encoding:
+
+```
+[type_tag: u8][length: varint][payload bytes]
+```
+
+This keeps storage simple while making the value's claimed type part of the physical record. A `Text "42"` and an `Int64 42` are distinct physical facts, not two spellings of the same thing.
+
+`DateTime` is stored as `Int64` (Unix milliseconds, UTC). `Decimal` is a Stage 6+ concern — the leading candidate is scaled `Int128` with an explicit scale factor stored in the column definition.
+
+### 31.3 Physical type vs logical type
+
+Two separate layers, two separate roles:
+
+| Layer | What it answers | Changes how? |
+|---|---|---|
+| Physical type (type_tag) | how the bytes were encoded on disk | only by rewriting the cell |
+| Logical type (column claim) | how the schema currently interprets the column | metadata-only when data is compatible |
+
+The physical type is immutable once written. The logical type is a claim in the system catalog that can sometimes change without touching rows.
+
+```rust
+struct ColumnDef {
+    name:              String,
+    physical_kind:     PhysicalKind,   // Text | Bytes | TaggedValue
+    logical_kind:      LogicalKind,    // Int64 | Text | Bool | ...
+    codec_version:     u8,
+    invalid_policy:    InvalidPolicy,  // Reject | Null | ErrorOnRead
+}
+```
+
+A migration that changes `Int64 → Text` when all stored values are already `Text` bytes needs only a catalog update. A migration that changes encoding requires a cell rewrite — but the system knows which kind it is before touching any data.
+
+### 31.4 Column claims and validation receipts
+
+Validating whether existing rows satisfy a new logical type claim is a scan. That scan runs once. Its result is a **validation receipt** stored in the system catalog alongside the column definition:
+
+```rust
+struct ColumnClaim {
+    column_id:          u32,
+    logical_kind:       LogicalKind,
+    codec_version:      u8,
+    validation_epoch:   u64,          // increments on any schema change to this column
+    validation_status:  ValidationStatus,  // Pending | Complete | Dirty
+    invalid_count:      u64,
+    validation_hash:    [u8; 32],     // H(column_id || logical_kind || codec || row_count || page_set_hash)
+}
+
+enum ValidationStatus {
+    Pending,    // never validated
+    Complete,   // validated, invalid_count == 0
+    Dirty,      // a write arrived that was not validated inline
+    Failed,     // validation ran and found invalid_count > 0
+}
+```
+
+The `validation_hash` covers the claim parameters and the page set at time of validation. It is included in the header MAC computation (alongside the system catalog MAC), so tampering with the receipt is detected on open.
+
+This gives query execution a cheap path:
+
+```
+column claims Int64
+validation_status = Complete
+validation_epoch matches current schema epoch
+invalid_count == 0
+→ safe to interpret as Int64 — no per-row parse needed
+```
+
+### 31.5 Write path with column claims
+
+Every write to a column with a non-Pending claim must either:
+
+1. **Validate inline** — parse the incoming value against the logical type on the write path and reject or accept immediately, keeping `validation_status = Complete`.
+2. **Mark dirty** — if inline validation is too expensive (bulk load path), set `validation_status = Dirty` and record the write in a dirty-range bitmap.
+
+Option 1 is the default. Option 2 is available as an explicit `PRAGMA validate_on_write = OFF` for bulk ingestion, with the expectation that the caller runs `tosumu audit` (§29) afterward.
+
+### 31.6 AEAD and physical type claims
+
+AEAD already binds page-level context in its AAD. Extend that to bind the physical encoding of each column at the cell level where cell-level encryption is used (Stage 5+ encrypted pages):
+
+```
+cell AAD = page_aad || column_id || physical_type_id || codec_version
+```
+
+This means:
+
+- Moving a `Text`-encoded cell into a column expecting `Int64` fails tag verification — the physical claim is bound.
+- Replaying an old codec version fails — the `codec_version` is bound.
+- Cross-column splicing fails — the `column_id` is bound.
+
+AEAD does **not** carry the logical type. Logical type is a schema claim, not a storage claim. Binding logical type into AEAD would make every logical migration a crypto event requiring cell rewrites. Keep them separate.
+
+The clean split:
+
+```
+AEAD proves:   these bytes belong here and were encoded this way
+Interpreter proves:   these bytes satisfy the current logical type claim
+Validation receipt proves:   the claim was checked and the result was authentic
+```
+
+### 31.7 Migration hierarchy
+
+Three tiers of migration cost, cheapest first:
+
+| Tier | Example | Cost |
+|---|---|---|
+| Metadata-only | `Int64 → Text` when stored values are already text bytes | catalog write, O(1) |
+| Metadata + validation | any logical type change; existing data must be verified | catalog write + one full-column scan |
+| Physical rewrite | change codec version or add cell-level encryption to a column | full table rewrite |
+
+The planner (`tosumu audit`) reports which tier a proposed migration falls into before any data is touched. A migration that claims to be Tier 1 but is actually Tier 2 is surfaced as a warning before execution.
+
+### 31.8 Planner warnings for dirty claims
+
+The query planner adds a new `PlanWarning` variant (alongside those in §29 / MVP+9):
+
+```rust
+PlanWarning::DirtyColumnClaim {
+    table:   String,
+    column:  String,
+    status:  ValidationStatus,
+}
+```
+
+Emitted when a query filters or orders on a column whose `validation_status` is `Dirty` or `Pending`. The warning reads:
+
+```
+W04  Column `age` has logical type Int64 but validation is Dirty.
+     Range comparisons may skip or misorder invalid rows.
+     Run: tosumu audit <path> --column users.age
+```
+
+Queries still execute — warnings do not block reads. But the caller is told that the result set may be incomplete.
+
+### 31.9 Design principle
+
+> The database does not just shrug and say "string good." It says: this string is being claimed as an integer, and I checked. Validation is auditable; the receipt is authenticated; the planner tells you when the receipt is stale.
