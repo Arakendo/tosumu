@@ -21,7 +21,7 @@
 // Internal slot payload: [right_child: u64 LE][key_len: u16 LE][key bytes]
 //   Slot i represents the separator key whose right child is right_child.
 //   leftmost_child lives in the page header (HDR_LEFTMOST).
-//   Slots need not be in sorted order; find_child does a linear scan.
+//   Slots are maintained in sorted order by separator key.
 //
 // Splits
 // ──────
@@ -147,7 +147,7 @@ impl BTree {
             let new_root = self.pager.allocate(PAGE_TYPE_INTERNAL)?;
             self.pager.with_page_mut(new_root, |page| {
                 write_u64(page, HDR_LEFTMOST, old_root);
-                internal_slot_append(page, &promoted_key, new_pgno)
+                internal_slot_insert_sorted(page, &promoted_key, new_pgno)
             })?;
             self.pager.set_root_page(new_root)?;
         }
@@ -320,9 +320,17 @@ impl BTree {
 
     /// Walk from the root to the leftmost leaf and return the height (1 = single leaf).
     pub fn tree_height(&self) -> Result<usize> {
+        const MAX_DEPTH: usize = 64;
         let mut pgno = self.pager.root_page();
         let mut h = 1;
         loop {
+            if h > MAX_DEPTH {
+                return Err(TosumuError::Corrupt { pgno, reason: "tree height exceeds maximum (cycle suspected)" });
+            }
+            let page_count = self.pager.page_count();
+            if pgno == 0 || pgno >= page_count {
+                return Err(TosumuError::Corrupt { pgno, reason: "internal page has out-of-range leftmost child" });
+            }
             let page_type = self.pager.with_page(pgno, |page| Ok(page[HDR_PAGE_TYPE]))?;
             if page_type == PAGE_TYPE_LEAF { return Ok(h); }
             pgno = self.pager.with_page(pgno, |page| Ok(read_u64(page, HDR_LEFTMOST)))?;
@@ -334,8 +342,18 @@ impl BTree {
 
     /// Traverse internal pages to reach the leaf that contains (or should contain) `key`.
     fn find_leaf(&self, key: &[u8]) -> Result<u64> {
+        const MAX_DEPTH: usize = 64;
         let mut pgno = self.pager.root_page();
+        let mut depth = 0usize;
         loop {
+            depth += 1;
+            if depth > MAX_DEPTH {
+                return Err(TosumuError::Corrupt { pgno, reason: "traversal depth exceeds maximum (cycle suspected)" });
+            }
+            let page_count = self.pager.page_count();
+            if pgno == 0 || pgno >= page_count {
+                return Err(TosumuError::Corrupt { pgno, reason: "traversal reached out-of-range page number" });
+            }
             let page_type = self.pager.with_page(pgno, |page| Ok(page[HDR_PAGE_TYPE]))?;
             match page_type {
                 PAGE_TYPE_LEAF => return Ok(pgno),
@@ -382,7 +400,7 @@ impl BTree {
         let needed = SLOT_SIZE + INTERNAL_RECORD_OVERHEAD + promoted_key.len();
         let fits = self.pager.with_page(pgno, |page| Ok(leaf_free_space(page) >= needed))?;
         if fits {
-            self.pager.with_page_mut(pgno, |page| internal_slot_append(page, &promoted_key, new_child))?;
+            self.pager.with_page_mut(pgno, |page| internal_slot_insert_sorted(page, &promoted_key, new_child))?;
             return Ok(None);
         }
         self.split_internal(pgno, &promoted_key, new_child)
@@ -419,6 +437,10 @@ impl BTree {
                 // Just rewrite without it.
             }
             _ => {}
+        }
+
+        if records.is_empty() {
+            return Err(TosumuError::Corrupt { pgno, reason: "split produced empty leaf" });
         }
 
         let mid = records.len() / 2;
@@ -663,8 +685,12 @@ impl BTree {
             pgno = self.pager.with_page(pgno, |p| Ok(read_u64(p, HDR_LEFTMOST)))?;
         }
         let mut seen: std::collections::HashSet<Vec<u8>> = Default::default();
+        let mut seen_pages: std::collections::HashSet<u64> = Default::default();
         let mut prev_max: Option<Vec<u8>> = None;
         loop {
+            if !seen_pages.insert(pgno) {
+                return Err(TosumuError::Corrupt { pgno, reason: "cycle detected in leaf chain" });
+            }
             let (live_keys, next) = self.pager.with_page(pgno, |page| {
                 if page[HDR_PAGE_TYPE] != PAGE_TYPE_LEAF {
                     return Err(TosumuError::Corrupt {
@@ -754,12 +780,35 @@ fn internal_read_all(page: &[u8; PAGE_PLAINTEXT_SIZE]) -> (Vec<(Vec<u8>, u64)>, 
 }
 
 /// Append a separator slot `(sep_key, right_child)` to an internal page.
+///
+/// Used only in bulk-rewrite paths where entries are already sorted.
 fn internal_slot_append(page: &mut [u8; PAGE_PLAINTEXT_SIZE], sep_key: &[u8], right_child: u64) -> Result<()> {
     let mut rec = Vec::with_capacity(INTERNAL_RECORD_OVERHEAD + sep_key.len());
     rec.extend_from_slice(&right_child.to_le_bytes());
     rec.extend_from_slice(&(sep_key.len() as u16).to_le_bytes());
     rec.extend_from_slice(sep_key);
     leaf_slot_append(page, &rec) // same slotted-page append logic
+}
+
+/// Insert a separator slot `(sep_key, right_child)` into an internal page in sorted order.
+///
+/// Reads all existing entries, inserts the new entry at the correct sorted position,
+/// then rewrites the page from scratch. Used when absorbing a child split.
+fn internal_slot_insert_sorted(page: &mut [u8; PAGE_PLAINTEXT_SIZE], sep_key: &[u8], right_child: u64) -> Result<()> {
+    let (mut entries, leftmost) = internal_read_all(page);
+    let pos = entries.partition_point(|(k, _)| k.as_slice() < sep_key);
+    entries.insert(pos, (sep_key.to_vec(), right_child));
+    let page_type = page[HDR_PAGE_TYPE];
+    *page = [0u8; PAGE_PLAINTEXT_SIZE];
+    page[HDR_PAGE_TYPE] = page_type;
+    write_u16(page, HDR_SLOT_COUNT, 0);
+    write_u16(page, HDR_FREE_START, PAGE_HEADER_SIZE as u16);
+    write_u16(page, HDR_FREE_END, PAGE_PLAINTEXT_SIZE as u16);
+    write_u64(page, HDR_LEFTMOST, leftmost);
+    for (k, c) in &entries {
+        internal_slot_append(page, k, *c)?;
+    }
+    Ok(())
 }
 
 // ── Leaf page helpers ─────────────────────────────────────────────────────────
