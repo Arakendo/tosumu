@@ -1,9 +1,15 @@
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Tosumu.Cli;
 
 public sealed class TosumuCliTool
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = false,
+    };
     public TosumuCliTool(string? executablePath = null)
     {
         ExecutablePath = executablePath ?? ResolveExecutablePath();
@@ -58,6 +64,66 @@ public sealed class TosumuCliTool
     public Task<TosumuCommandResult> RunAsync(CancellationToken cancellationToken = default, params string[] arguments) =>
         RunAsync((IEnumerable<string>)arguments, cancellationToken);
 
+    public async Task<TosumuInspectHeaderPayload> GetHeaderAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(new[] { "inspect", "header", "--json", path }, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectHeaderPayload>(result, "inspect.header");
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect header failed with kind '{envelope.Error?.Kind ?? "unknown"}': {envelope.Error?.Message ?? result.StandardError}");
+        }
+
+        if (!envelope.Ok || envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect header returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
+    public async Task<TosumuInspectVerifyPayload> GetVerifyAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(new[] { "inspect", "verify", "--json", path }, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectVerifyPayload>(result, "inspect.verify");
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect verify failed with kind '{envelope.Error?.Kind ?? "unknown"}': {envelope.Error?.Message ?? result.StandardError}");
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect verify returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
+    public async Task<TosumuInspectPagePayload> GetPageAsync(string path, ulong page, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(new[] { "inspect", "page", "--page", page.ToString(), "--json", path }, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectPagePayload>(result, "inspect.page");
+
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect page failed with kind '{envelope.Error?.Kind ?? "unknown"}': {envelope.Error?.Message ?? result.StandardError}");
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect page returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
     private ProcessStartInfo BuildStartInfo(IEnumerable<string> arguments)
     {
         var startInfo = new ProcessStartInfo
@@ -75,6 +141,29 @@ public sealed class TosumuCliTool
 
         return startInfo;
     }
+
+    private static TosumuInspectEnvelope<TPayload> DeserializeEnvelope<TPayload>(TosumuCommandResult result, string expectedCommand)
+    {
+        try
+        {
+            var envelope = JsonSerializer.Deserialize<TosumuInspectEnvelope<TPayload>>(result.StandardOutput, JsonOptions)
+                ?? throw new InvalidOperationException("tosumu returned empty JSON output");
+
+            if (!string.Equals(envelope.Command, expectedCommand, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"expected command '{expectedCommand}' but received '{envelope.Command}'");
+            }
+
+            return envelope;
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        {
+            throw new InvalidOperationException(
+                $"failed to deserialize tosumu JSON response.{Environment.NewLine}stdout:{Environment.NewLine}{result.StandardOutput}{Environment.NewLine}stderr:{Environment.NewLine}{result.StandardError}",
+                ex);
+        }
+    }
 }
 
 public sealed record TosumuCommandResult(int ExitCode, string StandardOutput, string StandardError)
@@ -90,3 +179,74 @@ public sealed record TosumuCommandResult(int ExitCode, string StandardOutput, st
             $"tosumu exited with code {ExitCode}{Environment.NewLine}stdout:{Environment.NewLine}{StandardOutput}{Environment.NewLine}stderr:{Environment.NewLine}{StandardError}");
     }
 }
+
+public sealed record TosumuInspectHeaderPayload(
+    [property: JsonPropertyName("format_version")] ushort FormatVersion,
+    [property: JsonPropertyName("page_size")] ushort PageSize,
+    [property: JsonPropertyName("min_reader_version")] ushort MinReaderVersion,
+    [property: JsonPropertyName("flags")] ushort Flags,
+    [property: JsonPropertyName("page_count")] ulong PageCount,
+    [property: JsonPropertyName("freelist_head")] ulong FreelistHead,
+    [property: JsonPropertyName("root_page")] ulong RootPage,
+    [property: JsonPropertyName("wal_checkpoint_lsn")] ulong WalCheckpointLsn,
+    [property: JsonPropertyName("dek_id")] ulong DekId,
+    [property: JsonPropertyName("keyslot_count")] ushort KeyslotCount,
+    [property: JsonPropertyName("keyslot_region_pages")] ushort KeyslotRegionPages,
+    [property: JsonPropertyName("slot0")] TosumuInspectKeyslotPayload Slot0);
+
+public sealed record TosumuInspectKeyslotPayload(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("kind_byte")] byte KindByte,
+    [property: JsonPropertyName("version")] byte Version);
+
+public sealed record TosumuInspectVerifyPayload(
+    [property: JsonPropertyName("pages_checked")] ulong PagesChecked,
+    [property: JsonPropertyName("pages_ok")] ulong PagesOk,
+    [property: JsonPropertyName("issue_count")] int IssueCount,
+    [property: JsonPropertyName("issues")] IReadOnlyList<TosumuInspectVerifyIssuePayload> Issues,
+    [property: JsonPropertyName("page_results")] IReadOnlyList<TosumuInspectPageVerifyPayload> PageResults,
+    [property: JsonPropertyName("btree")] TosumuInspectBtreeVerifyPayload Btree);
+
+public sealed record TosumuInspectVerifyIssuePayload(
+    [property: JsonPropertyName("pgno")] ulong Pgno,
+    [property: JsonPropertyName("description")] string Description);
+
+public sealed record TosumuInspectPageVerifyPayload(
+    [property: JsonPropertyName("pgno")] ulong Pgno,
+    [property: JsonPropertyName("page_version")] ulong? PageVersion,
+    [property: JsonPropertyName("auth_ok")] bool AuthOk,
+    [property: JsonPropertyName("issue")] string? Issue);
+
+public sealed record TosumuInspectBtreeVerifyPayload(
+    [property: JsonPropertyName("checked")] bool Checked,
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("message")] string? Message);
+
+public sealed record TosumuInspectPagePayload(
+    [property: JsonPropertyName("pgno")] ulong Pgno,
+    [property: JsonPropertyName("page_version")] ulong PageVersion,
+    [property: JsonPropertyName("page_type")] byte PageType,
+    [property: JsonPropertyName("page_type_name")] string PageTypeName,
+    [property: JsonPropertyName("slot_count")] ushort SlotCount,
+    [property: JsonPropertyName("free_start")] ushort FreeStart,
+    [property: JsonPropertyName("free_end")] ushort FreeEnd,
+    [property: JsonPropertyName("records")] IReadOnlyList<TosumuInspectRecordPayload> Records);
+
+public sealed record TosumuInspectRecordPayload(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("key_hex")] string? KeyHex,
+    [property: JsonPropertyName("value_hex")] string? ValueHex,
+    [property: JsonPropertyName("slot")] ushort? Slot,
+    [property: JsonPropertyName("record_type")] byte? RecordType);
+
+internal sealed record TosumuInspectEnvelope<TPayload>(
+    [property: JsonPropertyName("schema_version")] int SchemaVersion,
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("ok")] bool Ok,
+    [property: JsonPropertyName("payload")] TPayload? Payload,
+    [property: JsonPropertyName("error")] TosumuInspectErrorPayload? Error);
+
+internal sealed record TosumuInspectErrorPayload(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("message")] string Message,
+    [property: JsonPropertyName("pgno")] ulong? Pgno);

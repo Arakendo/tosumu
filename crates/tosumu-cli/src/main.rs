@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use tosumu_core::error::TosumuError;
 use tosumu_core::pager::Pager;
 use tosumu_core::page_store::PageStore;
@@ -22,6 +23,23 @@ enum UnlockSecret {
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    fn json_error_command(&self) -> Option<&'static str> {
+        match &self.command {
+            Command::Inspect {
+                action: InspectAction::Header { json: true, .. },
+            } => Some("inspect.header"),
+            Command::Inspect {
+                action: InspectAction::Verify { json: true, .. },
+            } => Some("inspect.verify"),
+            Command::Inspect {
+                action: InspectAction::Page { json: true, .. },
+            } => Some("inspect.page"),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -82,6 +100,11 @@ enum Command {
     View {
         path: PathBuf,
     },
+    /// Structured inspection commands intended for machine consumption.
+    Inspect {
+        #[command(subcommand)]
+        action: InspectAction,
+    },
     /// Copy a database file (and its WAL sidecar if present) to a destination.
     Backup {
         /// Source database path.
@@ -104,6 +127,133 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum InspectAction {
+    /// Inspect the file header.
+    Header {
+        path: PathBuf,
+        /// Emit a structured JSON envelope.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect page-auth verification results.
+    Verify {
+        path: PathBuf,
+        /// Emit a structured JSON envelope.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect a single decoded page.
+    Page {
+        path: PathBuf,
+        /// Page number to inspect.
+        #[arg(long)]
+        page: u64,
+        /// Emit a structured JSON envelope.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Serialize)]
+struct InspectEnvelope<T> {
+    schema_version: u32,
+    command: &'static str,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<InspectErrorPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectHeaderPayload {
+    format_version: u16,
+    page_size: u16,
+    min_reader_version: u16,
+    flags: u16,
+    page_count: u64,
+    freelist_head: u64,
+    root_page: u64,
+    wal_checkpoint_lsn: u64,
+    dek_id: u64,
+    keyslot_count: u16,
+    keyslot_region_pages: u16,
+    slot0: InspectKeyslotPayload,
+}
+
+#[derive(Serialize)]
+struct InspectVerifyPayload {
+    pages_checked: u64,
+    pages_ok: u64,
+    issue_count: usize,
+    issues: Vec<InspectVerifyIssuePayload>,
+    page_results: Vec<InspectPageVerifyPayload>,
+    btree: InspectBtreeVerifyPayload,
+}
+
+#[derive(Serialize)]
+struct InspectPagePayload {
+    pgno: u64,
+    page_version: u64,
+    page_type: u8,
+    page_type_name: &'static str,
+    slot_count: u16,
+    free_start: u16,
+    free_end: u16,
+    records: Vec<InspectRecordPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectRecordPayload {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slot: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record_type: Option<u8>,
+}
+
+#[derive(Serialize)]
+struct InspectVerifyIssuePayload {
+    pgno: u64,
+    description: String,
+}
+
+#[derive(Serialize)]
+struct InspectPageVerifyPayload {
+    pgno: u64,
+    page_version: Option<u64>,
+    auth_ok: bool,
+    issue: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InspectBtreeVerifyPayload {
+    checked: bool,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InspectKeyslotPayload {
+    kind: &'static str,
+    kind_byte: u8,
+    version: u8,
+}
+
+#[derive(Serialize)]
+struct InspectErrorPayload {
+    kind: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pgno: Option<u64>,
+}
+
+#[derive(Subcommand)]
 enum ProtectorAction {
     /// Add a new passphrase protector.
     AddPassphrase { path: PathBuf },
@@ -123,9 +273,14 @@ enum ProtectorAction {
 
 fn main() {
     let cli = Cli::parse();
+    let json_error_command = cli.json_error_command();
 
     if let Err(e) = run(cli) {
-        eprintln!("error: {e}");
+        if let Some(command) = json_error_command {
+            println!("{}", render_inspect_error_json(command, &e));
+        } else {
+            eprintln!("error: {e}");
+        }
         std::process::exit(1);
     }
 }
@@ -283,6 +438,241 @@ fn confirm_recovery_key_saved(secret: &str) -> Result<(), TosumuError> {
     confirm_recovery_words(secret, &word3, &word7)
 }
 
+fn render_json<T: Serialize>(value: &T) -> Result<String, TosumuError> {
+    serde_json::to_string_pretty(value)
+        .map_err(|e| TosumuError::Io(std::io::Error::other(e.to_string())))
+}
+
+fn keyslot_kind_name(kind: u8) -> &'static str {
+    match kind {
+        tosumu_core::format::KEYSLOT_KIND_EMPTY => "Empty",
+        tosumu_core::format::KEYSLOT_KIND_SENTINEL => "Sentinel",
+        tosumu_core::format::KEYSLOT_KIND_PASSPHRASE => "Passphrase",
+        tosumu_core::format::KEYSLOT_KIND_RECOVERY_KEY => "RecoveryKey",
+        tosumu_core::format::KEYSLOT_KIND_KEYFILE => "Keyfile",
+        _ => "Unknown",
+    }
+}
+
+fn page_type_name(page_type: u8) -> &'static str {
+    match page_type {
+        tosumu_core::format::PAGE_TYPE_LEAF => "Leaf",
+        tosumu_core::format::PAGE_TYPE_INTERNAL => "Internal",
+        tosumu_core::format::PAGE_TYPE_OVERFLOW => "Overflow",
+        tosumu_core::format::PAGE_TYPE_FREE => "Free",
+        _ => "Unknown",
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn inspect_error_payload(error: &TosumuError) -> InspectErrorPayload {
+    match error {
+        TosumuError::WrongKey => InspectErrorPayload {
+            kind: "wrong_key",
+            message: error.to_string(),
+            pgno: None,
+        },
+        TosumuError::AuthFailed { pgno } => InspectErrorPayload {
+            kind: "auth_failed",
+            message: error.to_string(),
+            pgno: *pgno,
+        },
+        TosumuError::Corrupt { pgno, .. } => InspectErrorPayload {
+            kind: "corrupt",
+            message: error.to_string(),
+            pgno: Some(*pgno),
+        },
+        TosumuError::InvalidArgument(_) => InspectErrorPayload {
+            kind: "invalid_argument",
+            message: error.to_string(),
+            pgno: None,
+        },
+        TosumuError::FileBusy { .. } => InspectErrorPayload {
+            kind: "file_busy",
+            message: error.to_string(),
+            pgno: None,
+        },
+        TosumuError::NotATosumFile
+        | TosumuError::NewerFormat { .. }
+        | TosumuError::PageSizeMismatch { .. } => InspectErrorPayload {
+            kind: "unsupported",
+            message: error.to_string(),
+            pgno: None,
+        },
+        TosumuError::CorruptRecord { .. }
+        | TosumuError::Io(_)
+        | TosumuError::EncryptFailed
+        | TosumuError::RngFailed
+        | TosumuError::FileTruncated { .. }
+        | TosumuError::Poisoned
+        | TosumuError::OutOfSpace
+        | TosumuError::CommittedButFlushFailed { .. } => InspectErrorPayload {
+            kind: "io",
+            message: error.to_string(),
+            pgno: None,
+        },
+        _ => InspectErrorPayload {
+            kind: "unsupported",
+            message: error.to_string(),
+            pgno: None,
+        },
+    }
+}
+
+fn render_inspect_error_json(command: &'static str, error: &TosumuError) -> String {
+    render_json(&InspectEnvelope::<()> {
+        schema_version: 1,
+        command,
+        ok: false,
+        payload: None,
+        error: Some(inspect_error_payload(error)),
+    }).unwrap_or_else(|serialization_error| {
+        format!(
+            "{{\"schema_version\":1,\"command\":\"{command}\",\"ok\":false,\"error\":{{\"kind\":\"io\",\"message\":{:?}}}}}",
+            serialization_error.to_string()
+        )
+    })
+}
+
+fn cmd_inspect_header_json(path: &Path) -> Result<String, TosumuError> {
+    let header = tosumu_core::inspect::read_header_info(path)?;
+    render_json(&InspectEnvelope {
+        schema_version: 1,
+        command: "inspect.header",
+        ok: true,
+        payload: Some(InspectHeaderPayload {
+            format_version: header.format_version,
+            page_size: header.page_size,
+            min_reader_version: header.min_reader_version,
+            flags: header.flags,
+            page_count: header.page_count,
+            freelist_head: header.freelist_head,
+            root_page: header.root_page,
+            wal_checkpoint_lsn: header.wal_checkpoint_lsn,
+            dek_id: header.dek_id,
+            keyslot_count: header.keyslot_count,
+            keyslot_region_pages: header.keyslot_region_pages,
+            slot0: InspectKeyslotPayload {
+                kind: keyslot_kind_name(header.ks0_kind),
+                kind_byte: header.ks0_kind,
+                version: header.ks0_version,
+            },
+        }),
+        error: None,
+    })
+}
+
+struct VerifySnapshot {
+    report: tosumu_core::inspect::VerifyReport,
+    btree: InspectBtreeVerifyPayload,
+}
+
+fn collect_verify_snapshot(path: &Path) -> Result<VerifySnapshot, TosumuError> {
+    let (pager, unlock) = open_pager(path)?;
+    let report = tosumu_core::inspect::verify_pager(&pager)?;
+    let btree = if report.issues.is_empty() {
+        match open_btree_with_unlock(path, unlock.as_ref()) {
+            Ok(tree) => match tree.check_invariants() {
+                Ok(()) => InspectBtreeVerifyPayload {
+                    checked: true,
+                    ok: true,
+                    message: None,
+                },
+                Err(error) => InspectBtreeVerifyPayload {
+                    checked: true,
+                    ok: false,
+                    message: Some(error.to_string()),
+                },
+            },
+            Err(error) => InspectBtreeVerifyPayload {
+                checked: false,
+                ok: false,
+                message: Some(format!("could not open as BTree: {error}")),
+            },
+        }
+    } else {
+        InspectBtreeVerifyPayload {
+            checked: false,
+            ok: false,
+            message: Some("skipped because page integrity issues were found".to_string()),
+        }
+    };
+
+    Ok(VerifySnapshot { report, btree })
+}
+
+fn cmd_inspect_verify_json(path: &Path) -> Result<String, TosumuError> {
+    let snapshot = collect_verify_snapshot(path)?;
+    render_json(&InspectEnvelope {
+        schema_version: 1,
+        command: "inspect.verify",
+        ok: snapshot.report.issues.is_empty() && (!snapshot.btree.checked || snapshot.btree.ok),
+        payload: Some(InspectVerifyPayload {
+            pages_checked: snapshot.report.pages_checked,
+            pages_ok: snapshot.report.pages_ok,
+            issue_count: snapshot.report.issues.len(),
+            issues: snapshot.report.issues.into_iter().map(|issue| InspectVerifyIssuePayload {
+                pgno: issue.pgno,
+                description: issue.description,
+            }).collect(),
+            page_results: snapshot.report.page_results.into_iter().map(|result| InspectPageVerifyPayload {
+                pgno: result.pgno,
+                page_version: result.page_version,
+                auth_ok: result.auth_ok,
+                issue: result.issue,
+            }).collect(),
+            btree: snapshot.btree,
+        }),
+        error: None,
+    })
+}
+
+fn cmd_inspect_page_json(path: &Path, pgno: u64) -> Result<String, TosumuError> {
+    let (pager, _) = open_pager(path)?;
+    let page = tosumu_core::inspect::inspect_page_from_pager(&pager, pgno)?;
+    render_json(&InspectEnvelope {
+        schema_version: 1,
+        command: "inspect.page",
+        ok: true,
+        payload: Some(InspectPagePayload {
+            pgno: page.pgno,
+            page_version: page.page_version,
+            page_type: page.page_type,
+            page_type_name: page_type_name(page.page_type),
+            slot_count: page.slot_count,
+            free_start: page.free_start,
+            free_end: page.free_end,
+            records: page.records.into_iter().map(|record| match record {
+                tosumu_core::inspect::RecordInfo::Live { key, value } => InspectRecordPayload {
+                    kind: "Live",
+                    key_hex: Some(bytes_to_hex(&key)),
+                    value_hex: Some(bytes_to_hex(&value)),
+                    slot: None,
+                    record_type: None,
+                },
+                tosumu_core::inspect::RecordInfo::Tombstone { key } => InspectRecordPayload {
+                    kind: "Tombstone",
+                    key_hex: Some(bytes_to_hex(&key)),
+                    value_hex: None,
+                    slot: None,
+                    record_type: None,
+                },
+                tosumu_core::inspect::RecordInfo::Unknown { slot, record_type } => InspectRecordPayload {
+                    kind: "Unknown",
+                    key_hex: None,
+                    value_hex: None,
+                    slot: Some(slot),
+                    record_type: Some(record_type),
+                },
+            }).collect(),
+        }),
+        error: None,
+    })
+}
+
 fn run(cli: Cli) -> Result<(), TosumuError> {
     match cli.command {
         Command::Init { path, encrypt } => {
@@ -339,6 +729,29 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
         Command::Hex  { path, page } => cmd_hex(&path, page)?,
         Command::Verify { path, explain } => cmd_verify(&path, explain)?,
         Command::View { path } => view::run(&path)?,
+        Command::Inspect { action } => match action {
+            InspectAction::Header { path, json } => {
+                if json {
+                    println!("{}", cmd_inspect_header_json(&path)?);
+                } else {
+                    cmd_dump(&path, None)?;
+                }
+            }
+            InspectAction::Verify { path, json } => {
+                if json {
+                    println!("{}", cmd_inspect_verify_json(&path)?);
+                } else {
+                    cmd_verify(&path, false)?;
+                }
+            }
+            InspectAction::Page { path, page, json } => {
+                if json {
+                    println!("{}", cmd_inspect_page_json(&path, page)?);
+                } else {
+                    cmd_dump(&path, Some(page))?;
+                }
+            }
+        },
         Command::Backup { src, dest } => cmd_backup(&src, &dest)?,
         Command::Protector { action } => match action {
             ProtectorAction::AddPassphrase { path } => {
@@ -591,10 +1004,8 @@ fn cmd_hex(path: &std::path::Path, pgno: u64) -> tosumu_core::error::Result<()> 
 // ── verify ────────────────────────────────────────────────────────────────────
 
 fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Result<()> {
-    use tosumu_core::inspect::verify_pager;
-
-    let (pager, unlock) = open_pager(path)?;
-    let report = verify_pager(&pager)?;
+    let snapshot = collect_verify_snapshot(path)?;
+    let report = snapshot.report;
     println!("verifying {} ({} data pages) ...", path.display(), report.pages_checked);
 
     if explain {
@@ -624,23 +1035,17 @@ fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Resu
 
     if report.issues.is_empty() {
         // Page integrity passed — also check B-tree structural invariants.
-        match open_btree_with_unlock(path, unlock.as_ref()) {
-            Ok(tree) => match tree.check_invariants() {
-                Ok(()) => {
-                    if explain {
-                        println!("  btree:       OK     — keys sorted, routing correct, leaf chain ordered");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("  btree:       FAIL   — {e}");
-                    eprintln!("FAILED: btree structural invariant violated");
-                    std::process::exit(1);
-                }
-            },
-            Err(e) => {
-                if explain {
-                    eprintln!("  btree:       SKIP   — could not open as BTree: {e}");
-                }
+        if snapshot.btree.checked && snapshot.btree.ok {
+            if explain {
+                println!("  btree:       OK     — keys sorted, routing correct, leaf chain ordered");
+            }
+        } else if let Some(message) = &snapshot.btree.message {
+            if snapshot.btree.checked {
+                eprintln!("  btree:       FAIL   — {message}");
+                eprintln!("FAILED: btree structural invariant violated");
+                std::process::exit(1);
+            } else if explain {
+                eprintln!("  btree:       SKIP   — {message}");
             }
         }
         println!("all pages ok: {}/{}", report.pages_ok, report.pages_checked);
@@ -906,5 +1311,163 @@ mod tests {
             }
             _ => panic!("unexpected command variant"),
         }
+    }
+
+    #[test]
+    fn cli_parses_inspect_header_json_subcommand() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "header",
+            "--json",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Header { path, json },
+            } => {
+                assert_eq!(path, PathBuf::from("db.tsm"));
+                assert!(json);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_inspect_verify_json_subcommand() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "verify",
+            "--json",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Verify { path, json },
+            } => {
+                assert_eq!(path, PathBuf::from("db.tsm"));
+                assert!(json);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_inspect_page_json_subcommand() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "page",
+            "--page",
+            "1",
+            "--json",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Page { path, page, json },
+            } => {
+                assert_eq!(path, PathBuf::from("db.tsm"));
+                assert_eq!(page, 1);
+                assert!(json);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn inspect_header_json_uses_structured_success_envelope() {
+        let path = temp_path("inspect_header_json_success");
+        let _ = std::fs::remove_file(&path);
+        PageStore::create(&path).unwrap();
+
+        let rendered = cmd_inspect_header_json(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.header");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["page_size"], 4096);
+        assert_eq!(json["payload"]["slot0"]["kind"], "Sentinel");
+        assert_eq!(json["payload"]["slot0"]["kind_byte"], 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_error_json_uses_structured_error_envelope() {
+        let rendered = render_inspect_error_json(
+            "inspect.header",
+            &TosumuError::InvalidArgument("page number out of range"),
+        );
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.header");
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["kind"], "invalid_argument");
+        assert_eq!(json["error"]["message"], "invalid argument: page number out of range");
+        assert!(json["payload"].is_null());
+    }
+
+    #[test]
+    fn inspect_verify_json_uses_structured_success_envelope() {
+        let path = temp_path("inspect_verify_json_success");
+        let _ = std::fs::remove_file(&path);
+        PageStore::create(&path).unwrap();
+
+        let rendered = cmd_inspect_verify_json(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.verify");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["issues"].as_array().unwrap().len(), 0);
+        assert_eq!(json["payload"]["btree"]["checked"], true);
+        assert_eq!(json["payload"]["btree"]["ok"], true);
+        assert!(json["payload"]["btree"]["message"].is_null());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_page_json_uses_structured_success_envelope() {
+        let path = temp_path("inspect_page_json_success");
+        let _ = std::fs::remove_file(&path);
+        let mut store = PageStore::create(&path).unwrap();
+        store.put(b"alpha", b"one").unwrap();
+
+        let rendered = cmd_inspect_page_json(&path, 1).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.page");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["pgno"], 1);
+        assert_eq!(json["payload"]["page_type_name"], "Leaf");
+        assert!(json["payload"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["kind"] == "Live"
+                && record["key_hex"] == "616c706861"
+                && record["value_hex"] == "6f6e65"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "tosumu-cli-{name}-{}-{}.tsm",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 }

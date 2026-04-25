@@ -1498,6 +1498,8 @@ dependencies = [
  "crossterm",
  "ratatui",
  "rpassword",
+ "serde",
+ "serde_json",
  "tosumu-core",
 ]
 

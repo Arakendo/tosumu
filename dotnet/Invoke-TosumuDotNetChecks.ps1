@@ -14,12 +14,20 @@ $packageProject = Join-Path $repoRoot 'dotnet\Tosumu.Cli\Tosumu.Cli.csproj'
 $testProject = Join-Path $repoRoot 'dotnet\Tosumu.Cli.IntegrationTests\Tosumu.Cli.IntegrationTests.csproj'
 $packageOutput = Join-Path $repoRoot 'dotnet\_packages'
 $packageCache = Join-Path $repoRoot 'dotnet\_packages-cache'
+$restorePackagesPath = $packageCache
 
 Write-Host "Repository root: $repoRoot"
 
 if (Test-Path $packageCache) {
     Write-Host "Clearing local NuGet cache: $packageCache"
-    Remove-Item -Recurse -Force $packageCache
+    try {
+        Remove-Item -Recurse -Force $packageCache
+    }
+    catch {
+        $timestamp = Get-Date -Format 'yyyyMMddHHmmssfff'
+        $restorePackagesPath = Join-Path $repoRoot ("dotnet\_packages-cache-$timestamp")
+        Write-Warning "Could not clear local NuGet cache. Falling back to fresh restore path: $restorePackagesPath"
+    }
 }
 
 if (-not $SkipPack) {
@@ -32,7 +40,7 @@ if (-not $SkipPack) {
 
 if (-not $SkipTests) {
     Write-Host "Running Tosumu.Cli integration tests"
-    & dotnet test $testProject -c $Configuration -p:RestoreForce=true -p:RestoreNoCache=true
+    & dotnet test $testProject -c $Configuration -p:RestoreForce=true -p:RestoreNoCache=true -p:RestorePackagesPath=$restorePackagesPath
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet test failed with exit code $LASTEXITCODE"
     }

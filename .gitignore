@@ -33,6 +33,7 @@ Thumbs.db
 # .NET local packaging / build outputs
 /dotnet/_packages/
 /dotnet/_packages-cache/
+/dotnet/_packages-cache-*/
 /dotnet/**/bin/
 /dotnet/**/obj/
 

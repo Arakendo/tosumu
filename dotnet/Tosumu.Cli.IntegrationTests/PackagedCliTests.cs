@@ -44,6 +44,60 @@ public sealed class PackagedCliTests : IDisposable
     }
 
     [Fact]
+    public async Task PackagedCli_can_read_structured_header_through_wrapper()
+    {
+        var dbPath = Path.Combine(rootDirectory, "header-json.tsm");
+
+        (await cli.RunAsync("init", dbPath)).EnsureSuccess();
+
+        var header = await cli.GetHeaderAsync(dbPath);
+
+        Assert.Equal((ushort)4096, header.PageSize);
+        Assert.Equal((ushort)1, header.KeyslotCount);
+        Assert.Equal("Sentinel", header.Slot0.Kind);
+        Assert.Equal((byte)1, header.Slot0.KindByte);
+        Assert.True(header.PageCount >= 2);
+    }
+
+    [Fact]
+    public async Task PackagedCli_can_read_structured_verify_through_wrapper()
+    {
+        var dbPath = Path.Combine(rootDirectory, "verify-json.tsm");
+
+        (await cli.RunAsync("init", dbPath)).EnsureSuccess();
+        (await cli.RunAsync("put", dbPath, "alpha", "one")).EnsureSuccess();
+
+        var verify = await cli.GetVerifyAsync(dbPath);
+
+        Assert.Equal((ulong)verify.PageResults.Count, verify.PagesChecked);
+        Assert.Equal(verify.PagesChecked, verify.PagesOk);
+        Assert.Equal(0, verify.IssueCount);
+        Assert.Empty(verify.Issues);
+        Assert.True(verify.Btree.Checked);
+        Assert.True(verify.Btree.Ok);
+        Assert.Null(verify.Btree.Message);
+        Assert.All(verify.PageResults, result => Assert.True(result.AuthOk));
+    }
+
+    [Fact]
+    public async Task PackagedCli_can_read_structured_page_through_wrapper()
+    {
+        var dbPath = Path.Combine(rootDirectory, "page-json.tsm");
+
+        (await cli.RunAsync("init", dbPath)).EnsureSuccess();
+        (await cli.RunAsync("put", dbPath, "alpha", "one")).EnsureSuccess();
+
+        var page = await cli.GetPageAsync(dbPath, 1);
+
+        Assert.Equal((ulong)1, page.Pgno);
+        Assert.Equal("Leaf", page.PageTypeName);
+        Assert.Contains(page.Records, record =>
+            record.Kind == "Live"
+            && record.KeyHex == "616c706861"
+            && record.ValueHex == "6f6e65");
+    }
+
+    [Fact]
     public async Task PackagedCli_can_hammer_many_put_get_cycles()
     {
         var dbPath = Path.Combine(rootDirectory, "hammer.tsm");
