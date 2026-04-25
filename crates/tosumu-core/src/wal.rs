@@ -1055,9 +1055,9 @@ mod tests {
             }).unwrap();
             // Confirm the tree actually split before we stress recovery.
             assert!(
-                store.stat().tree_height >= 2,
+                store.stat().unwrap().tree_height >= 2,
                 "expected root split, got height {}; adjust insert count",
-                store.stat().tree_height,
+                store.stat().unwrap().tree_height,
             );
         }
 

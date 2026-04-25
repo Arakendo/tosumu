@@ -6,7 +6,13 @@
 use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use tosumu_core::error::TosumuError;
+use tosumu_core::pager::Pager;
 use tosumu_core::page_store::PageStore;
+
+enum UnlockSecret {
+    Passphrase(String),
+    RecoveryKey(String),
+}
 
 #[derive(Parser)]
 #[command(name = tosumu_core::NAME, version, about = "tosumu key-value store (MVP +7)")]
@@ -116,14 +122,66 @@ fn main() {
 }
 
 /// Open a `PageStore`, automatically prompting for a passphrase if required.
-fn open_store(path: &Path) -> Result<PageStore, TosumuError> {
+fn open_store_readonly(path: &Path) -> Result<PageStore, TosumuError> {
+    match PageStore::open_readonly(path) {
+        Ok(store) => Ok(store),
+        Err(TosumuError::WrongKey) => {
+            let pass = prompt_passphrase("passphrase: ")?;
+            match PageStore::open_with_passphrase_readonly(path, &pass) {
+                Ok(store) => Ok(store),
+                Err(TosumuError::WrongKey) => {
+                    let recovery = prompt_passphrase("recovery key: ")?;
+                    PageStore::open_with_recovery_key_readonly(path, &recovery)
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn open_store_writable(path: &Path) -> Result<PageStore, TosumuError> {
     match PageStore::open(path) {
         Ok(store) => Ok(store),
         Err(TosumuError::WrongKey) => {
             let pass = prompt_passphrase("passphrase: ")?;
-            PageStore::open_with_passphrase(path, &pass)
+            match PageStore::open_with_passphrase(path, &pass) {
+                Ok(store) => Ok(store),
+                Err(TosumuError::WrongKey) => {
+                    let recovery = prompt_passphrase("recovery key: ")?;
+                    PageStore::open_with_recovery_key(path, &recovery)
+                }
+                Err(e) => Err(e),
+            }
         }
         Err(e) => Err(e),
+    }
+}
+
+fn open_pager(path: &Path) -> Result<(Pager, Option<UnlockSecret>), TosumuError> {
+    match Pager::open_readonly(path) {
+        Ok(pager) => Ok((pager, None)),
+        Err(TosumuError::WrongKey) => {
+            let pass = prompt_passphrase("passphrase: ")?;
+            match Pager::open_with_passphrase_readonly(path, &pass) {
+                Ok(pager) => Ok((pager, Some(UnlockSecret::Passphrase(pass)))),
+                Err(TosumuError::WrongKey) => {
+                    let recovery = prompt_passphrase("recovery key: ")?;
+                    let pager = Pager::open_with_recovery_key_readonly(path, &recovery)?;
+                    Ok((pager, Some(UnlockSecret::RecoveryKey(recovery))))
+                }
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn open_btree_with_unlock(path: &Path, unlock: Option<&UnlockSecret>) -> Result<tosumu_core::btree::BTree, TosumuError> {
+    match unlock {
+        None => tosumu_core::btree::BTree::open_readonly(path),
+        Some(UnlockSecret::Passphrase(pass)) => tosumu_core::btree::BTree::open_with_passphrase_readonly(path, pass),
+        Some(UnlockSecret::RecoveryKey(recovery)) => tosumu_core::btree::BTree::open_with_recovery_key_readonly(path, recovery),
     }
 }
 
@@ -155,11 +213,11 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
             }
         }
         Command::Put { path, key, value } => {
-            let mut store = open_store(&path)?;
+            let mut store = open_store_writable(&path)?;
             store.put(key.as_bytes(), value.as_bytes())?;
         }
         Command::Get { path, key } => {
-            let store = open_store(&path)?;
+            let store = open_store_readonly(&path)?;
             match store.get(key.as_bytes())? {
                 Some(v) => println!("{}", String::from_utf8_lossy(&v)),
                 None => {
@@ -169,18 +227,18 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
             }
         }
         Command::Delete { path, key } => {
-            let mut store = open_store(&path)?;
+            let mut store = open_store_writable(&path)?;
             store.delete(key.as_bytes())?;
         }
         Command::Scan { path } => {
-            let store = open_store(&path)?;
+            let store = open_store_readonly(&path)?;
             for (k, v) in store.scan()? {
                 println!("{}\t{}", String::from_utf8_lossy(&k), String::from_utf8_lossy(&v));
             }
         }
         Command::Stat { path } => {
-            let store = open_store(&path)?;
-            let s = store.stat();
+            let store = open_store_readonly(&path)?;
+            let s = store.stat()?;
             println!("page_count:  {}", s.page_count);
             println!("data_pages:  {}", s.data_pages);
             println!("tree_height: {}", s.tree_height);
@@ -198,12 +256,26 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
                     eprintln!("passphrases do not match");
                     std::process::exit(1);
                 }
-                let slot = PageStore::add_passphrase_protector(&path, &unlock, &new1)?;
+                let slot = match PageStore::add_passphrase_protector(&path, &unlock, &new1) {
+                    Ok(slot) => slot,
+                    Err(TosumuError::WrongKey) => {
+                        let recovery = prompt_passphrase("recovery key: ")?;
+                        PageStore::add_passphrase_protector_with_recovery_key(&path, &recovery, &new1)?
+                    }
+                    Err(e) => return Err(e),
+                };
                 println!("protector added at slot {slot}");
             }
             ProtectorAction::AddRecoveryKey { path } => {
                 let unlock = prompt_passphrase("current passphrase: ")?;
-                let key = PageStore::add_recovery_key_protector(&path, &unlock)?;
+                let key = match PageStore::add_recovery_key_protector(&path, &unlock) {
+                    Ok(key) => key,
+                    Err(TosumuError::WrongKey) => {
+                        let recovery = prompt_passphrase("recovery key: ")?;
+                        PageStore::add_recovery_key_protector_with_recovery_key(&path, &recovery)?
+                    }
+                    Err(e) => return Err(e),
+                };
                 println!();
                 println!("=== RECOVERY KEY — save this somewhere safe ===");
                 println!();
@@ -213,7 +285,14 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
             }
             ProtectorAction::Remove { path, slot } => {
                 let unlock = prompt_passphrase("passphrase: ")?;
-                PageStore::remove_keyslot(&path, &unlock, slot)?;
+                match PageStore::remove_keyslot(&path, &unlock, slot) {
+                    Ok(()) => {}
+                    Err(TosumuError::WrongKey) => {
+                        let recovery = prompt_passphrase("recovery key: ")?;
+                        PageStore::remove_keyslot_with_recovery_key(&path, &recovery, slot)?;
+                    }
+                    Err(e) => return Err(e),
+                }
                 println!("slot {slot} removed");
             }
             ProtectorAction::List { path } => {
@@ -247,7 +326,14 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
                 eprintln!("passphrases do not match");
                 std::process::exit(1);
             }
-            PageStore::rekey_kek(&path, slot, &old_pass, &new1)?;
+            match PageStore::rekey_kek(&path, slot, &old_pass, &new1) {
+                Ok(()) => {}
+                Err(TosumuError::WrongKey) => {
+                    let recovery = prompt_passphrase("recovery key: ")?;
+                    PageStore::rekey_kek_with_recovery_key(&path, slot, &recovery, &new1)?;
+                }
+                Err(e) => return Err(e),
+            }
             println!("slot {slot} KEK rotated");
         }
     }
@@ -261,7 +347,7 @@ fn cmd_dump(path: &std::path::Path, page: Option<u64>) -> tosumu_core::error::Re
         PAGE_TYPE_LEAF, PAGE_TYPE_INTERNAL, PAGE_TYPE_OVERFLOW, PAGE_TYPE_FREE,
         KEYSLOT_KIND_EMPTY, KEYSLOT_KIND_SENTINEL, KEYSLOT_KIND_PASSPHRASE,
     };
-    use tosumu_core::inspect::{read_header_info, inspect_page, RecordInfo};
+    use tosumu_core::inspect::{inspect_page_from_pager, read_header_info, RecordInfo};
 
     match page {
         None => {
@@ -300,7 +386,8 @@ fn cmd_dump(path: &std::path::Path, page: Option<u64>) -> tosumu_core::error::Re
             println!("version: {}", h.ks0_version);
         }
         Some(pgno) => {
-            let s = inspect_page(path, pgno)?;
+            let (pager, _) = open_pager(path)?;
+            let s = inspect_page_from_pager(&pager, pgno)?;
             let type_name = match s.page_type {
                 PAGE_TYPE_LEAF     => "Leaf",
                 PAGE_TYPE_INTERNAL => "Internal",
@@ -368,10 +455,10 @@ fn cmd_hex(path: &std::path::Path, pgno: u64) -> tosumu_core::error::Result<()> 
 // ── verify ────────────────────────────────────────────────────────────────────
 
 fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Result<()> {
-    use tosumu_core::inspect::verify_file;
-    use tosumu_core::btree::BTree;
+    use tosumu_core::inspect::verify_pager;
 
-    let report = verify_file(path)?;
+    let (pager, unlock) = open_pager(path)?;
+    let report = verify_pager(&pager)?;
     println!("verifying {} ({} data pages) ...", path.display(), report.pages_checked);
 
     if explain {
@@ -401,8 +488,7 @@ fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Resu
 
     if report.issues.is_empty() {
         // Page integrity passed — also check B-tree structural invariants.
-        // For passphrase-protected DBs, skip the btree check (no passphrase available here).
-        match BTree::open(path) {
+        match open_btree_with_unlock(path, unlock.as_ref()) {
             Ok(tree) => match tree.check_invariants() {
                 Ok(()) => {
                     if explain {
@@ -415,11 +501,6 @@ fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Resu
                     std::process::exit(1);
                 }
             },
-            Err(tosumu_core::error::TosumuError::WrongKey) => {
-                if explain {
-                    println!("  btree:       SKIP   — passphrase-protected DB (supply passphrase for btree check)");
-                }
-            }
             Err(e) => {
                 if explain {
                     eprintln!("  btree:       SKIP   — could not open as BTree: {e}");
@@ -450,19 +531,146 @@ fn cmd_backup(
     use tosumu_core::wal::wal_path;
     use tosumu_core::error::TosumuError;
 
-    std::fs::copy(src, dest)
-        .map_err(|e| TosumuError::Io(e))?;
-    println!("backed up {} → {}", src.display(), dest.display());
+    const MAX_BACKUP_ATTEMPTS: u32 = 5;
 
-    // Copy WAL sidecar if it exists.
+    let dest_wal = wal_path(dest);
+    if dest.exists() || dest_wal.exists() {
+        return Err(TosumuError::InvalidArgument(
+            "backup destination already exists; choose a new path",
+        ));
+    }
+
+    let staged_main = backup_temp_path(dest, "main");
+    let staged_wal = backup_temp_path(&dest_wal, "wal");
+    let probe_main = backup_temp_path(dest, "main-probe");
+    let probe_wal = backup_temp_path(&dest_wal, "wal-probe");
+    let _ = std::fs::remove_file(&staged_main);
+    let _ = std::fs::remove_file(&staged_wal);
+    let _ = std::fs::remove_file(&probe_main);
+    let _ = std::fs::remove_file(&probe_wal);
+
     let src_wal = wal_path(src);
+    let mut copied_wal = false;
+    let mut stable = false;
+
+    for _ in 0..MAX_BACKUP_ATTEMPTS {
+        cleanup_backup_temp(&staged_main, &staged_wal);
+        cleanup_backup_temp(&probe_main, &probe_wal);
+
+        std::fs::copy(src, &staged_main)
+            .map_err(TosumuError::Io)?;
+        let copied_wal_a = copy_optional_file(&src_wal, &staged_wal)?;
+
+        std::fs::copy(src, &probe_main)
+            .map_err(|e| {
+                cleanup_backup_temp(&staged_main, &staged_wal);
+                TosumuError::Io(e)
+            })?;
+        let copied_wal_b = copy_optional_file(&src_wal, &probe_wal).map_err(|e| {
+            cleanup_backup_temp(&staged_main, &staged_wal);
+            cleanup_backup_temp(&probe_main, &probe_wal);
+            e
+        })?;
+
+        let wal_matches = copied_wal_a == copied_wal_b
+            && (!copied_wal_a || files_equal(&staged_wal, &probe_wal).map_err(TosumuError::Io)?);
+        let main_matches = files_equal(&staged_main, &probe_main).map_err(|e| {
+            cleanup_backup_temp(&staged_main, &staged_wal);
+            cleanup_backup_temp(&probe_main, &probe_wal);
+            TosumuError::Io(e)
+        })?;
+
+        if main_matches && wal_matches {
+            copied_wal = copied_wal_a;
+            stable = true;
+            break;
+        }
+    }
+
+    cleanup_backup_temp(&probe_main, &probe_wal);
+
+    if !stable {
+        cleanup_backup_temp(&staged_main, &staged_wal);
+        return Err(TosumuError::FileBusy {
+            path: src.to_path_buf(),
+            operation: "capturing a stable backup snapshot",
+        });
+    }
+
+    if copied_wal {
+        std::fs::rename(&staged_wal, &dest_wal).map_err(|e| {
+            let _ = std::fs::remove_file(&staged_main);
+            let _ = std::fs::remove_file(&staged_wal);
+            TosumuError::Io(e)
+        })?;
+    }
+
+    std::fs::rename(&staged_main, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&staged_main);
+        if copied_wal {
+            let _ = std::fs::remove_file(&dest_wal);
+        }
+        TosumuError::Io(e)
+    })?;
+
+    println!("backed up {} → {}", src.display(), dest.display());
     if src_wal.exists() {
-        let dest_wal = wal_path(dest);
-        std::fs::copy(&src_wal, &dest_wal)
-            .map_err(|e| TosumuError::Io(e))?;
         println!("backed up {} → {}", src_wal.display(), dest_wal.display());
     }
     Ok(())
+}
+
+fn backup_temp_path(dest: &Path, kind: &str) -> PathBuf {
+    let file_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("backup");
+    dest.with_file_name(format!(".{file_name}.{}.{}.tmp", std::process::id(), kind))
+}
+
+fn copy_optional_file(src: &Path, dest: &Path) -> Result<bool, TosumuError> {
+    let _ = std::fs::remove_file(dest);
+    if src.exists() {
+        std::fs::copy(src, dest).map_err(TosumuError::Io)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn cleanup_backup_temp(main: &Path, wal: &Path) {
+    let _ = std::fs::remove_file(main);
+    let _ = std::fs::remove_file(wal);
+}
+
+fn files_equal(a: &Path, b: &Path) -> std::io::Result<bool> {
+    use std::fs::File;
+    use std::io::Read;
+
+    let meta_a = std::fs::metadata(a)?;
+    let meta_b = std::fs::metadata(b)?;
+    if meta_a.len() != meta_b.len() {
+        return Ok(false);
+    }
+
+    let mut fa = File::open(a)?;
+    let mut fb = File::open(b)?;
+    let mut buf_a = [0u8; 8192];
+    let mut buf_b = [0u8; 8192];
+
+    loop {
+        let read_a = fa.read(&mut buf_a)?;
+        let read_b = fb.read(&mut buf_b)?;
+        if read_a != read_b {
+            return Ok(false);
+        }
+        if read_a == 0 {
+            return Ok(true);
+        }
+        if buf_a[..read_a] != buf_b[..read_b] {
+            return Ok(false);
+        }
+    }
 }
 
 // ── display helpers ───────────────────────────────────────────────────────────

@@ -105,15 +105,20 @@ pub struct PageSummary {
 /// Decrypt and parse page `pgno`.
 ///
 /// Returns `Err(InvalidArgument)` when `pgno` is 0 or out of range.
-/// Opens the pager internally (read-write, matching `Pager::open`).
+/// Opens the pager internally in read-only mode.
 pub fn inspect_page(path: &Path, pgno: u64) -> Result<PageSummary> {
+    let pager = Pager::open_readonly(path)?;
+    inspect_page_from_pager(&pager, pgno)
+}
+
+/// Decrypt and parse page `pgno` from an already-open pager.
+pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> {
     if pgno == 0 {
         return Err(TosumuError::InvalidArgument(
             "page 0 is the file header; use `dump` without --page to view it",
         ));
     }
 
-    let pager = Pager::open(path)?;
     if pgno >= pager.page_count() {
         return Err(TosumuError::InvalidArgument("page number out of range"));
     }
@@ -134,7 +139,11 @@ pub fn inspect_page(path: &Path, pgno: u64) -> Result<PageSummary> {
         let offset = read_u16(&plaintext, slot_pos) as usize;
         let length = read_u16(&plaintext, slot_pos + 2) as usize;
 
-        if length == 0 || offset + length > PAGE_PLAINTEXT_SIZE {
+        if length == 0
+            || offset < PAGE_HEADER_SIZE
+            || offset < free_end as usize
+            || offset + length > PAGE_PLAINTEXT_SIZE
+        {
             records.push(RecordInfo::Unknown { slot: i as u16, record_type: 0 });
             continue;
         }
@@ -217,7 +226,12 @@ pub struct VerifyReport {
 /// failures are collected. Returns `Err` only for fatal header-level errors
 /// (bad magic, I/O failure reading page 0, etc.).
 pub fn verify_file(path: &Path) -> Result<VerifyReport> {
-    let pager = Pager::open(path)?;
+    let pager = Pager::open_readonly(path)?;
+    verify_pager(&pager)
+}
+
+/// Authenticate every data page through an already-open pager.
+pub fn verify_pager(pager: &Pager) -> Result<VerifyReport> {
     let page_count = pager.page_count();
     let pages_to_check = page_count.saturating_sub(1); // skip page 0
 

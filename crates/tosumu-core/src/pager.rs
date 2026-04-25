@@ -37,7 +37,7 @@ use crate::crypto::{decrypt_page, encrypt_page, generate_dek, derive_subkeys,
     ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST};
 use crate::error::{Result, TosumuError};
 use crate::format::*;
-use crate::wal::{WalRecord, WalWriter, wal_path};
+use crate::wal::{WalReader, WalRecord, WalWriter, wal_path};
 
 /// The pager. Holds an open file and the derived page key.
 pub struct Pager {
@@ -52,8 +52,10 @@ pub struct Pager {
     /// B+ tree root page number (0 = not yet set). Persisted at OFF_ROOT_PAGE.
     root_page: u64,
     // ── WAL / transaction state ───────────────────────────────────────────
-    /// WAL writer, open for the lifetime of this Pager.
-    wal: WalWriter,
+    /// WAL writer, open for the lifetime of writable Pagers.
+    wal: Option<WalWriter>,
+    /// Read-only handles never open the WAL for appending and reject mutation APIs.
+    read_only: bool,
     /// Whether a transaction is currently active.
     txn_active: bool,
     /// txn_id of the current open transaction.
@@ -71,6 +73,11 @@ pub struct Pager {
     txn_saved_page_count: u64,
     txn_saved_root_page: u64,
     txn_saved_freelist_head: u64,
+}
+
+enum ProtectorUnlock<'a> {
+    Passphrase(&'a str),
+    RecoveryKey(&'a str),
 }
 
 impl Pager {
@@ -117,7 +124,8 @@ impl Pager {
             page_count: 1,
             freelist_head: 0,
             root_page: 0,
-            wal,
+            wal: Some(wal),
+            read_only: false,
             txn_active: false,
             txn_id: 0,
             next_txn_id: 1,
@@ -168,6 +176,35 @@ impl Pager {
 
         let (page_key, _header_mac_key, _audit_key) = derive_subkeys(&dek);
         finish_open(file, page_key, None, &page0, path)
+    }
+
+    /// Open an existing database file in read-only mode.
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(path)?;
+
+        let page0 = read_page0(&mut file)?;
+        validate_header(&page0)?;
+
+        let ks_start = KEYSLOT_REGION_OFFSET;
+        let ks_kind = page0[ks_start + KS_OFF_KIND];
+        let dek = match ks_kind {
+            KEYSLOT_KIND_SENTINEL => {
+                let mut dek = [0u8; 32];
+                dek.copy_from_slice(
+                    &page0[ks_start + KS_OFF_WRAPPED_DEK..ks_start + KS_OFF_WRAPPED_DEK + 32],
+                );
+                dek
+            }
+            KEYSLOT_KIND_PASSPHRASE | KEYSLOT_KIND_RECOVERY_KEY => {
+                return Err(TosumuError::WrongKey);
+            }
+            _ => return Err(TosumuError::NotATosumFile),
+        };
+
+        let (page_key, _header_mac_key, _audit_key) = derive_subkeys(&dek);
+        finish_open_readonly(file, page_key, None, &page0, path)
     }
 
     /// Create a new passphrase-protected database file at `path`.
@@ -240,7 +277,8 @@ impl Pager {
             page_count: 1,
             freelist_head: 0,
             root_page: 0,
-            wal,
+            wal: Some(wal),
+            read_only: false,
             txn_active: false,
             txn_id: 0,
             next_txn_id: 1,
@@ -288,6 +326,34 @@ impl Pager {
         finish_open(file, page_key, header_mac_key, &page0, path)
     }
 
+    /// Open a passphrase-protected database file in read-only mode.
+    pub fn open_with_passphrase_readonly(path: &Path, passphrase: &str) -> Result<Self> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(path)?;
+
+        let mut page0 = [0u8; PAGE_SIZE];
+        file.seek(SeekFrom::Start(0))?;
+        file.read_exact(&mut page0)?;
+
+        validate_header(&page0)?;
+
+        let dek_id = read_u64(&page0, OFF_DEK_ID);
+        let keyslot_count = keyslot_count(&page0);
+        let (dek, is_encrypted) = try_unlock_passphrase(&page0, passphrase, dek_id, keyslot_count)?;
+
+        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
+        let header_mac_key = if is_encrypted {
+            let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
+            verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
+            Some(derived_hmk)
+        } else {
+            None
+        };
+
+        finish_open_readonly(file, page_key, header_mac_key, &page0, path)
+    }
+
     /// Open a database using a recovery key string.
     ///
     /// Scans all keyslots, trying the recovery key against every RecoveryKey slot.
@@ -316,6 +382,31 @@ impl Pager {
         finish_open(file, page_key, Some(derived_hmk), &page0, path)
     }
 
+    /// Open a recovery-key-protected database file in read-only mode.
+    pub fn open_with_recovery_key_readonly(path: &Path, recovery_str: &str) -> Result<Self> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(path)?;
+
+        let mut page0 = [0u8; PAGE_SIZE];
+        file.seek(SeekFrom::Start(0))?;
+        file.read_exact(&mut page0)?;
+
+        validate_header(&page0)?;
+
+        let dek_id = read_u64(&page0, OFF_DEK_ID);
+        let keyslot_count = keyslot_count(&page0);
+
+        let kek = derive_recovery_kek(recovery_str)?;
+        let dek = try_unlock_with_kek(&page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_RECOVERY_KEY)?;
+
+        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
+        let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
+        verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
+
+        finish_open_readonly(file, page_key, Some(derived_hmk), &page0, path)
+    }
+
     // ── Key management ───────────────────────────────────────────────────────
 
     /// Add a passphrase protector to an existing database.
@@ -324,13 +415,22 @@ impl Pager {
     /// Then a new Passphrase keyslot is written in the first empty slot.
     /// Returns the slot index used.
     pub fn add_passphrase_protector(path: &Path, unlock_passphrase: &str, new_passphrase: &str) -> Result<u16> {
+        Self::add_passphrase_protector_inner(path, ProtectorUnlock::Passphrase(unlock_passphrase), new_passphrase)
+    }
+
+    /// Add a passphrase protector, unlocking the DEK with a recovery key.
+    pub fn add_passphrase_protector_with_recovery_key(path: &Path, recovery_str: &str, new_passphrase: &str) -> Result<u16> {
+        Self::add_passphrase_protector_inner(path, ProtectorUnlock::RecoveryKey(recovery_str), new_passphrase)
+    }
+
+    fn add_passphrase_protector_inner(path: &Path, unlock: ProtectorUnlock<'_>, new_passphrase: &str) -> Result<u16> {
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
         let mut page0 = read_page0(&mut file)?;
         validate_header(&page0)?;
 
         let dek_id = read_u64(&page0, OFF_DEK_ID);
         let keyslot_count = keyslot_count(&page0);
-        let (dek, _) = try_unlock_passphrase(&page0, unlock_passphrase, dek_id, keyslot_count)?;
+        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
         let (_, hmk, _) = derive_subkeys(&dek);
 
         let slot_idx = find_empty_slot(&page0, keyslot_count)?;
@@ -356,13 +456,22 @@ impl Pager {
     ///
     /// Returns the one-time recovery string that must be shown to the user.
     pub fn add_recovery_key_protector(path: &Path, unlock_passphrase: &str) -> Result<String> {
+        Self::add_recovery_key_protector_inner(path, ProtectorUnlock::Passphrase(unlock_passphrase))
+    }
+
+    /// Add a recovery-key protector, unlocking the DEK with an existing recovery key.
+    pub fn add_recovery_key_protector_with_recovery_key(path: &Path, recovery_str: &str) -> Result<String> {
+        Self::add_recovery_key_protector_inner(path, ProtectorUnlock::RecoveryKey(recovery_str))
+    }
+
+    fn add_recovery_key_protector_inner(path: &Path, unlock: ProtectorUnlock<'_>) -> Result<String> {
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
         let mut page0 = read_page0(&mut file)?;
         validate_header(&page0)?;
 
         let dek_id = read_u64(&page0, OFF_DEK_ID);
         let keyslot_count = keyslot_count(&page0);
-        let (dek, _) = try_unlock_passphrase(&page0, unlock_passphrase, dek_id, keyslot_count)?;
+        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
         let (_, hmk, _) = derive_subkeys(&dek);
 
         let slot_idx = find_empty_slot(&page0, keyslot_count)?;
@@ -389,13 +498,22 @@ impl Pager {
     ///
     /// Refuses to remove the last active slot (that would brick the database).
     pub fn remove_keyslot(path: &Path, unlock_passphrase: &str, slot_idx: u16) -> Result<()> {
+        Self::remove_keyslot_inner(path, ProtectorUnlock::Passphrase(unlock_passphrase), slot_idx)
+    }
+
+    /// Remove a keyslot, unlocking the DEK with a recovery key.
+    pub fn remove_keyslot_with_recovery_key(path: &Path, recovery_str: &str, slot_idx: u16) -> Result<()> {
+        Self::remove_keyslot_inner(path, ProtectorUnlock::RecoveryKey(recovery_str), slot_idx)
+    }
+
+    fn remove_keyslot_inner(path: &Path, unlock: ProtectorUnlock<'_>, slot_idx: u16) -> Result<()> {
         let mut file = OpenOptions::new().read(true).write(true).open(path)?;
         let mut page0 = read_page0(&mut file)?;
         validate_header(&page0)?;
 
         let dek_id = read_u64(&page0, OFF_DEK_ID);
         let keyslot_count = keyslot_count(&page0);
-        let (dek, _) = try_unlock_passphrase(&page0, unlock_passphrase, dek_id, keyslot_count)?;
+        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
         let (_, hmk, _) = derive_subkeys(&dek);
 
         if slot_idx as usize >= keyslot_count {
@@ -472,6 +590,43 @@ impl Pager {
         write_page0(&mut file, &page0)
     }
 
+    /// Rotate the KEK for a Passphrase slot using a recovery key to unlock the DEK.
+    pub fn rekey_kek_with_recovery_key(path: &Path, slot_idx: u16, recovery_str: &str, new_passphrase: &str) -> Result<()> {
+        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        let mut page0 = read_page0(&mut file)?;
+        validate_header(&page0)?;
+
+        let dek_id = read_u64(&page0, OFF_DEK_ID);
+        let keyslot_count = keyslot_count(&page0);
+
+        if slot_idx as usize >= keyslot_count {
+            return Err(TosumuError::InvalidArgument("slot index out of range"));
+        }
+
+        let ks = KEYSLOT_REGION_OFFSET + slot_idx as usize * KEYSLOT_SIZE;
+        if page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
+            return Err(TosumuError::InvalidArgument("slot is not a Passphrase slot"));
+        }
+
+        let dek = unlock_key_management_dek(&page0, ProtectorUnlock::RecoveryKey(recovery_str), dek_id, keyslot_count)?;
+        let (_, hmk, _) = derive_subkeys(&dek);
+
+        let mut new_salt = [0u8; 16];
+        getrandom::getrandom(&mut new_salt).map_err(|_| TosumuError::RngFailed)?;
+        let new_kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
+        let new_kek = derive_passphrase_kek(new_passphrase, &new_salt, &new_kdf_params)?;
+        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
+        let new_kcv = compute_kcv(&new_kek);
+
+        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, dek_id,
+                      &new_salt, &new_kdf_params, &new_nonce, &new_wrapped, &new_kcv);
+
+        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
+        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
+
+        write_page0(&mut file, &page0)
+    }
+
     /// List active keyslots. Returns `Vec<(slot_index, kind_byte)>`.
     pub fn list_keyslots(path: &Path) -> Result<Vec<(u16, u8)>> {
         let mut file = OpenOptions::new().read(true).open(path)?;
@@ -500,7 +655,11 @@ impl Pager {
     /// also needs the page_version field.
     pub fn read_page(&self, pgno: u64) -> Result<([u8; PAGE_PLAINTEXT_SIZE], u64)> {
         self.validate_data_pgno(pgno)?;
-        let frame = self.read_frame(pgno)?;
+        let frame = if let Some(buffered) = self.dirty_pages.get(&pgno) {
+            **buffered
+        } else {
+            self.read_frame(pgno)?
+        };
         decrypt_page(&self.page_key, pgno, &frame)
     }
 
@@ -537,6 +696,7 @@ impl Pager {
     where
         F: FnOnce(&mut [u8; PAGE_PLAINTEXT_SIZE]) -> Result<()>,
     {
+        self.ensure_writable()?;
         self.validate_data_pgno(pgno)?;
 
         // For reads: check dirty buffer first (read-your-own-writes).
@@ -559,7 +719,7 @@ impl Pager {
 
         if self.txn_active {
             // WAL path: buffer the frame, append PageWrite.
-            self.wal.append(&WalRecord::PageWrite {
+            self.wal_mut()?.append(&WalRecord::PageWrite {
                     pgno,
                     page_version: version + 1,
                     frame: Box::new(new_frame),
@@ -599,6 +759,7 @@ impl Pager {
     /// `pgno` must be > 0 and <= `page_count` (i.e. the next page to be
     /// allocated, or an existing page being re-initialised).
     pub fn init_page(&mut self, pgno: u64, page_type: u8) -> Result<()> {
+        self.ensure_writable()?;
         if pgno == 0 || pgno > self.page_count {
             return Err(TosumuError::InvalidArgument("invalid page number for initialization"));
         }
@@ -613,7 +774,7 @@ impl Pager {
         let frame = encrypt_page(&self.page_key, pgno, 1, page_type, &plaintext)?;
         if self.txn_active {
             // Buffer through WAL so rollback discards the page and recovery can replay it.
-            self.wal.append(&WalRecord::PageWrite {
+            self.wal_mut()?.append(&WalRecord::PageWrite {
                 pgno,
                 page_version: 1,
                 frame: Box::new(frame),
@@ -633,6 +794,7 @@ impl Pager {
 
     /// Begin a write transaction. Must not be called while one is already open.
     pub fn begin_txn(&mut self) -> Result<()> {
+        self.ensure_writable()?;
         assert!(!self.txn_active, "nested transactions are not supported");
         self.txn_id = self.next_txn_id;
         self.next_txn_id += 1;
@@ -641,7 +803,8 @@ impl Pager {
         self.txn_saved_page_count = self.page_count;
         self.txn_saved_root_page = self.root_page;
         self.txn_saved_freelist_head = self.freelist_head;
-        self.wal.append(&WalRecord::Begin { txn_id: self.txn_id })?;
+        let txn_id = self.txn_id;
+        self.wal_mut()?.append(&WalRecord::Begin { txn_id })?;
         Ok(())
     }
 
@@ -655,6 +818,7 @@ impl Pager {
     ///   marked idle so subsequent calls do not panic, but the caller must reopen — WAL
     ///   recovery will replay the committed transaction automatically.
     pub fn commit_txn(&mut self) -> Result<()> {
+        self.ensure_writable()?;
         assert!(self.txn_active, "commit_txn called with no active transaction");
 
         // Phase 1: make the transaction durable in the WAL.
@@ -662,7 +826,7 @@ impl Pager {
         // the .tsm flush (avoids reading page 0 twice and eliminates a second fsync).
         let page0_frame: Option<Box<[u8; PAGE_SIZE]>> = if self.pending_header_flush {
             let page0 = self.build_updated_page0()?;
-            self.wal.append(&WalRecord::PageWrite {
+            self.wal_mut()?.append(&WalRecord::PageWrite {
                 pgno: 0,
                 page_version: 0,
                 frame: Box::new(page0),
@@ -671,8 +835,9 @@ impl Pager {
         } else {
             None
         };
-        self.wal.append(&WalRecord::Commit { txn_id: self.txn_id })?;
-        self.wal.sync()?;
+        let txn_id = self.txn_id;
+        self.wal_mut()?.append(&WalRecord::Commit { txn_id })?;
+        self.wal_mut()?.sync()?;
 
         // Transaction is now committed.  Clear txn_active *before* the .tsm flush so
         // the handle is never left stuck in txn_active=true even if the flush fails.
@@ -730,6 +895,7 @@ impl Pager {
 
     /// Persist a new B+ tree root page number.
     pub fn set_root_page(&mut self, pgno: u64) -> Result<()> {
+        self.ensure_writable()?;
         self.root_page = pgno;
         self.flush_header()
     }
@@ -743,6 +909,7 @@ impl Pager {
     /// (included in the WAL and then flushed to .tsm with the other dirty pages).
     /// On rollback the saved snapshot values are restored instead.
     pub fn flush_header(&mut self) -> Result<()> {
+        self.ensure_writable()?;
         if self.txn_active {
             self.pending_header_flush = true;
             return Ok(());
@@ -800,6 +967,17 @@ impl Pager {
         f.seek(SeekFrom::Start(offset))?;
         f.read_exact(&mut frame)?;
         Ok(frame)
+    }
+
+    fn ensure_writable(&self) -> Result<()> {
+        if self.read_only {
+            return Err(TosumuError::InvalidArgument("database handle is read-only"));
+        }
+        Ok(())
+    }
+
+    fn wal_mut(&mut self) -> Result<&mut WalWriter> {
+        self.wal.as_mut().ok_or(TosumuError::InvalidArgument("database handle is read-only"))
     }
 
     fn write_frame(&mut self, pgno: u64, frame: &[u8; PAGE_SIZE]) -> Result<()> {
@@ -1021,6 +1199,24 @@ fn try_unlock_with_kek(
     Err(TosumuError::WrongKey)
 }
 
+fn unlock_key_management_dek(
+    page0: &[u8; PAGE_SIZE],
+    unlock: ProtectorUnlock<'_>,
+    dek_id: u64,
+    keyslot_count: usize,
+) -> Result<[u8; 32]> {
+    match unlock {
+        ProtectorUnlock::Passphrase(passphrase) => {
+            let (dek, _) = try_unlock_passphrase(page0, passphrase, dek_id, keyslot_count)?;
+            Ok(dek)
+        }
+        ProtectorUnlock::RecoveryKey(recovery_str) => {
+            let kek = derive_recovery_kek(recovery_str)?;
+            try_unlock_with_kek(page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_RECOVERY_KEY)
+        }
+    }
+}
+
 /// Complete a Pager open given a derived page_key + optional MAC key.
 fn finish_open(
     mut file: File,
@@ -1065,7 +1261,7 @@ fn finish_open(
         return Ok(Pager {
             file, page_key, header_mac_key,
             page_count, freelist_head, root_page,
-            wal, txn_active: false, txn_id: 0, next_txn_id: 1, dirty_pages: HashMap::new(),
+            wal: Some(wal), read_only: false, txn_active: false, txn_id: 0, next_txn_id: 1, dirty_pages: HashMap::new(),
             pending_header_flush: false, txn_saved_page_count: 0, txn_saved_root_page: 0, txn_saved_freelist_head: 0,
         });
     }
@@ -1073,9 +1269,92 @@ fn finish_open(
     Ok(Pager {
         file, page_key, header_mac_key,
         page_count, freelist_head, root_page,
-        wal, txn_active: false, txn_id: 0, next_txn_id: 1, dirty_pages: HashMap::new(),
+        wal: Some(wal), read_only: false, txn_active: false, txn_id: 0, next_txn_id: 1, dirty_pages: HashMap::new(),
         pending_header_flush: false, txn_saved_page_count: 0, txn_saved_root_page: 0, txn_saved_freelist_head: 0,
     })
+}
+
+fn finish_open_readonly(
+    file: File,
+    page_key: [u8; 32],
+    header_mac_key: Option<[u8; 32]>,
+    page0: &[u8; PAGE_SIZE],
+    path: &Path,
+) -> Result<Pager> {
+    let page_count = read_u64(page0, OFF_PAGE_COUNT);
+    let file_len = file.metadata()?.len();
+    let expected_len = page_count
+        .checked_mul(PAGE_SIZE as u64)
+        .ok_or(TosumuError::Corrupt { pgno: 0, reason: "page_count overflow" })?;
+    if file_len < expected_len {
+        return Err(TosumuError::FileTruncated { expected: expected_len, found: file_len });
+    }
+
+    let mut pager = Pager {
+        file,
+        page_key,
+        header_mac_key,
+        page_count,
+        freelist_head: read_u64(page0, OFF_FREELIST_HEAD),
+        root_page: read_u64(page0, OFF_ROOT_PAGE),
+        wal: None,
+        read_only: true,
+        txn_active: false,
+        txn_id: 0,
+        next_txn_id: 1,
+        dirty_pages: HashMap::new(),
+        pending_header_flush: false,
+        txn_saved_page_count: 0,
+        txn_saved_root_page: 0,
+        txn_saved_freelist_head: 0,
+    };
+
+    let wp = wal_path(path);
+    if wp.exists() {
+        overlay_committed_wal(&wp, &mut pager)?;
+    }
+    Ok(pager)
+}
+
+fn overlay_committed_wal(wal_path: &Path, pager: &mut Pager) -> Result<()> {
+    let records = WalReader::read_all(wal_path)?;
+    let committed: std::collections::HashSet<u64> = records.iter()
+        .filter_map(|(_, r)| if let WalRecord::Commit { txn_id } = r { Some(*txn_id) } else { None })
+        .collect();
+
+    let mut current_txn: Option<u64> = None;
+    for (_, record) in &records {
+        match record {
+            WalRecord::Begin { txn_id } => current_txn = Some(*txn_id),
+            WalRecord::PageWrite { pgno, frame, .. } => {
+                if let Some(txn_id) = current_txn {
+                    if committed.contains(&txn_id) {
+                        if *pgno == 0 {
+                            let page0 = frame.as_ref();
+                            validate_header(page0)?;
+                            if let Some(ref hmk) = pager.header_mac_key {
+                                let keyslot_count = keyslot_count(page0);
+                                let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
+                                verify_header_mac(hmk, page0, keyslot_count, &stored_mac)?;
+                            }
+                            pager.page_count = read_u64(page0, OFF_PAGE_COUNT);
+                            pager.freelist_head = read_u64(page0, OFF_FREELIST_HEAD);
+                            pager.root_page = read_u64(page0, OFF_ROOT_PAGE);
+                        } else {
+                            pager.dirty_pages.insert(*pgno, frame.clone());
+                        }
+                    }
+                }
+            }
+            WalRecord::Commit { txn_id } => {
+                if current_txn == Some(*txn_id) {
+                    current_txn = None;
+                }
+            }
+            WalRecord::Checkpoint { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 // ── File header construction ──────────────────────────────────────────────────

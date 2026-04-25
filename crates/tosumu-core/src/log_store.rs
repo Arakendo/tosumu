@@ -140,8 +140,9 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
     let mut offset: u64 = 0;
 
     loop {
+        let record_start = offset;
         let mut header = [0u8; 8];
-        match read_exact_or_eof(&mut reader, &mut header) {
+        match read_exact_or_eof(&mut reader, &mut header, record_start) {
             Ok(false) => break, // clean EOF
             Ok(true) => {}
             Err(e) => return Err(e),
@@ -159,7 +160,7 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
 
         let mut key = vec![0u8; key_len];
         reader.read_exact(&mut key).map_err(|_| TosumuError::CorruptRecord {
-            offset,
+            offset: record_start + 8,
             reason: "unexpected EOF reading key",
         })?;
 
@@ -175,13 +176,14 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
             }
             let mut value = vec![0u8; val_len];
             reader.read_exact(&mut value).map_err(|_| TosumuError::CorruptRecord {
-                offset,
+                offset: record_start + 8 + key_len as u64,
                 reason: "unexpected EOF reading value",
             })?;
             map.insert(key, value);
         }
 
-        offset += 8 + key_len as u64 + if val_len_raw == DELETE_SENTINEL { 0 } else { val_len_raw as u64 };
+        offset = record_start + 8 + key_len as u64
+            + if val_len_raw == DELETE_SENTINEL { 0 } else { val_len_raw as u64 };
     }
 
     Ok(map)
@@ -189,7 +191,7 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
 
 /// Read exactly `buf.len()` bytes. Returns `Ok(true)` on success,
 /// `Ok(false)` if the file is at EOF before any bytes were read.
-fn read_exact_or_eof(reader: &mut impl Read, buf: &mut [u8]) -> Result<bool> {
+fn read_exact_or_eof(reader: &mut impl Read, buf: &mut [u8], start_offset: u64) -> Result<bool> {
     let mut total = 0;
     while total < buf.len() {
         match reader.read(&mut buf[total..]) {
@@ -198,7 +200,7 @@ fn read_exact_or_eof(reader: &mut impl Read, buf: &mut [u8]) -> Result<bool> {
                     return Ok(false); // clean EOF
                 }
                 return Err(TosumuError::CorruptRecord {
-                    offset: total as u64,
+                    offset: start_offset + total as u64,
                     reason: "unexpected EOF in record header",
                 });
             }
@@ -323,6 +325,36 @@ mod tests {
 
         let mut store = LogStore::open(&path).unwrap();
         assert!(store.put(b"", b"v").is_err());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn truncated_later_header_reports_absolute_offset() {
+        use std::io::Write;
+
+        let path = temp_path("truncated_header_offset");
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut store = LogStore::open(&path).unwrap();
+            store.put(b"a", b"b").unwrap();
+        }
+
+        {
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            file.write_all(&[0x01, 0x02, 0x03]).unwrap();
+            file.sync_data().unwrap();
+        }
+
+        let err = LogStore::open(&path).err().unwrap();
+        assert!(matches!(
+            err,
+            TosumuError::CorruptRecord {
+                offset: 13,
+                reason: "unexpected EOF in record header"
+            }
+        ));
 
         let _ = std::fs::remove_file(&path);
     }

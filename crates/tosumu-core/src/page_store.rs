@@ -60,6 +60,11 @@ impl PageStore {
         Ok(PageStore { tree: BTree::open(path)? })
     }
 
+    /// Open an existing `.tsm` file in read-only mode.
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        Ok(PageStore { tree: BTree::open_readonly(path)? })
+    }
+
     /// Create a new passphrase-protected `.tsm` file.
     pub fn create_encrypted(path: &Path, passphrase: &str) -> Result<Self> {
         Ok(PageStore { tree: BTree::create_encrypted(path, passphrase)? })
@@ -70,9 +75,19 @@ impl PageStore {
         Ok(PageStore { tree: BTree::open_with_passphrase(path, passphrase)? })
     }
 
+    /// Open a passphrase-protected `.tsm` file in read-only mode.
+    pub fn open_with_passphrase_readonly(path: &Path, passphrase: &str) -> Result<Self> {
+        Ok(PageStore { tree: BTree::open_with_passphrase_readonly(path, passphrase)? })
+    }
+
     /// Open a recovery-key-protected `.tsm` file.
     pub fn open_with_recovery_key(path: &Path, recovery_str: &str) -> Result<Self> {
         Ok(PageStore { tree: BTree::open_with_recovery_key(path, recovery_str)? })
+    }
+
+    /// Open a recovery-key-protected `.tsm` file in read-only mode.
+    pub fn open_with_recovery_key_readonly(path: &Path, recovery_str: &str) -> Result<Self> {
+        Ok(PageStore { tree: BTree::open_with_recovery_key_readonly(path, recovery_str)? })
     }
 
     // ── Key management ───────────────────────────────────────────────────────
@@ -82,9 +97,19 @@ impl PageStore {
         BTree::add_passphrase_protector(path, unlock_passphrase, new_passphrase)
     }
 
+    /// Add a passphrase protector, unlocking the DEK with a recovery key.
+    pub fn add_passphrase_protector_with_recovery_key(path: &Path, recovery_str: &str, new_passphrase: &str) -> Result<u16> {
+        BTree::add_passphrase_protector_with_recovery_key(path, recovery_str, new_passphrase)
+    }
+
     /// Add a recovery-key protector. Returns the one-time recovery string.
     pub fn add_recovery_key_protector(path: &Path, unlock_passphrase: &str) -> Result<String> {
         BTree::add_recovery_key_protector(path, unlock_passphrase)
+    }
+
+    /// Add a recovery-key protector, unlocking the DEK with an existing recovery key.
+    pub fn add_recovery_key_protector_with_recovery_key(path: &Path, recovery_str: &str) -> Result<String> {
+        BTree::add_recovery_key_protector_with_recovery_key(path, recovery_str)
     }
 
     /// Remove the keyslot at `slot_idx` (must not be the last active slot).
@@ -92,9 +117,19 @@ impl PageStore {
         BTree::remove_keyslot(path, unlock_passphrase, slot_idx)
     }
 
+    /// Remove a keyslot, unlocking the DEK with a recovery key.
+    pub fn remove_keyslot_with_recovery_key(path: &Path, recovery_str: &str, slot_idx: u16) -> Result<()> {
+        BTree::remove_keyslot_with_recovery_key(path, recovery_str, slot_idx)
+    }
+
     /// Rotate the KEK for the Passphrase slot at `slot_idx`.
     pub fn rekey_kek(path: &Path, slot_idx: u16, old_passphrase: &str, new_passphrase: &str) -> Result<()> {
         BTree::rekey_kek(path, slot_idx, old_passphrase, new_passphrase)
+    }
+
+    /// Rotate a Passphrase slot using a recovery key to unlock the DEK.
+    pub fn rekey_kek_with_recovery_key(path: &Path, slot_idx: u16, recovery_str: &str, new_passphrase: &str) -> Result<()> {
+        BTree::rekey_kek_with_recovery_key(path, slot_idx, recovery_str, new_passphrase)
     }
 
     /// List active keyslots. Returns `Vec<(slot_index, kind_byte)>`.
@@ -142,13 +177,13 @@ impl PageStore {
     }
 
     /// Return summary statistics.
-    pub fn stat(&self) -> StoreStat {
+    pub fn stat(&self) -> Result<StoreStat> {
         let page_count = self.tree.page_count();
-        StoreStat {
+        Ok(StoreStat {
             page_count,
             data_pages: page_count.saturating_sub(1),
-            tree_height: self.tree.tree_height().unwrap_or(0),
-        }
+            tree_height: self.tree.tree_height()?,
+        })
     }
 
     /// Execute a write transaction atomically.
@@ -244,7 +279,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let store = PageStore::create(&path).unwrap();
-        assert_eq!(store.stat().data_pages, 1);
+        assert_eq!(store.stat().unwrap().data_pages, 1);
         let pairs = store.scan().unwrap();
         assert!(pairs.is_empty());
 
@@ -260,7 +295,7 @@ mod tests {
 
         let store = PageStore::create(&path).unwrap();
         // Empty store: exactly one data page (the root leaf), height 1.
-        assert_eq!(store.stat().data_pages, 1, "expected exactly one data page");
+        assert_eq!(store.stat().unwrap().data_pages, 1, "expected exactly one data page");
         assert_eq!(store.tree.tree_height().unwrap(), 1, "expected tree height 1 for empty store");
         // Invariant checker also validates slot array bounds and free_start sanity.
         store.tree.check_invariants().unwrap();
@@ -401,7 +436,7 @@ mod tests {
             store.put(k.as_bytes(), v.as_bytes()).unwrap();
         }
 
-        let before_pages = store.stat().data_pages;
+        let before_pages = store.stat().unwrap().data_pages;
         assert!(before_pages > 1, "expected multiple pages, got {before_pages}");
 
         let store2 = PageStore::open(&path).unwrap();
@@ -1074,7 +1109,7 @@ mod tests {
         for i in 0..n {
             store.put(format!("k{i:04}").as_bytes(), b"data").unwrap();
         }
-        let pages_after_first = store.stat().page_count;
+        let pages_after_first = store.stat().unwrap().page_count;
 
         for i in 0..n {
             store.delete(format!("k{i:04}").as_bytes()).unwrap();
@@ -1082,7 +1117,7 @@ mod tests {
         for i in 0..n {
             store.put(format!("k{i:04}").as_bytes(), b"data2").unwrap();
         }
-        let pages_after_second = store.stat().page_count;
+        let pages_after_second = store.stat().unwrap().page_count;
 
         // Second round must not have grown by more than the first round did
         // (some slack for compaction overhead is ok, but not 2x).
@@ -1700,6 +1735,31 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[test]
+    fn open_readonly_works_on_readonly_file() {
+        let path = temp_path("readonly_file_open");
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut store = PageStore::create(&path).unwrap();
+            store.put(b"k", b"v").unwrap();
+        }
+
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let store = PageStore::open_readonly(&path).unwrap();
+        assert_eq!(store.get(b"k").unwrap(), Some(b"v".to_vec()));
+        assert_eq!(store.scan().unwrap(), vec![(b"k".to_vec(), b"v".to_vec())]);
+        assert_eq!(store.stat().unwrap().page_count, 2);
+
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_readonly(false);
+        std::fs::set_permissions(&path, perms).unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Failed rekey (wrong old passphrase) → file is bitwise identical.
     #[test]
     fn failed_rekey_does_not_mutate_file() {
@@ -1803,6 +1863,43 @@ mod tests {
         // Step 6: data is still intact.
         let s = PageStore::open_with_passphrase(&path, "p0").unwrap();
         assert_eq!(s.get(b"marker").unwrap(), Some(b"created".to_vec()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recovery_key_only_database_can_still_manage_protectors() {
+        let path = temp_path("recovery_only_manage");
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut store = PageStore::create_encrypted(&path, "main").unwrap();
+            store.put(b"marker", b"ok").unwrap();
+        }
+
+        let recovery = PageStore::add_recovery_key_protector(&path, "main").unwrap();
+        PageStore::remove_keyslot(&path, "main", 0).unwrap();
+
+        let slot = PageStore::add_passphrase_protector_with_recovery_key(&path, &recovery, "p1").unwrap();
+        PageStore::open_with_passphrase(&path, "p1").unwrap();
+
+        let recovery2 = PageStore::add_recovery_key_protector_with_recovery_key(&path, &recovery).unwrap();
+        PageStore::open_with_recovery_key(&path, &recovery2).unwrap();
+
+        PageStore::rekey_kek_with_recovery_key(&path, slot, &recovery, "p1-new").unwrap();
+        assert!(PageStore::open_with_passphrase(&path, "p1").is_err());
+        PageStore::open_with_passphrase(&path, "p1-new").unwrap();
+
+        PageStore::remove_keyslot_with_recovery_key(&path, &recovery, slot).unwrap();
+        assert!(PageStore::open_with_passphrase(&path, "p1-new").is_err());
+        PageStore::open_with_recovery_key(&path, &recovery).unwrap();
+        PageStore::open_with_recovery_key(&path, &recovery2).unwrap();
+
+        let slots = PageStore::list_keyslots(&path).unwrap();
+        assert_eq!(slots.len(), 2);
+
+        let store = PageStore::open_with_recovery_key(&path, &recovery).unwrap();
+        assert_eq!(store.get(b"marker").unwrap(), Some(b"ok".to_vec()));
 
         let _ = std::fs::remove_file(&path);
     }
