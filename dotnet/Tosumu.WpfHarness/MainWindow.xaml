@@ -126,7 +126,7 @@
                               Margin="0,0,12,0"
                               VerticalContentAlignment="Center"
                               SelectionChanged="UnlockModeComboBox_OnSelectionChanged">
-                        <ComboBoxItem IsSelected="True" Tag="Auto" Content="Auto / none" />
+                        <ComboBoxItem Tag="Auto" Content="Auto / none" />
                         <ComboBoxItem Tag="Passphrase" Content="Passphrase" />
                         <ComboBoxItem Tag="RecoveryKey" Content="Recovery key" />
                         <ComboBoxItem Tag="Keyfile" Content="Keyfile" />

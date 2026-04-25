@@ -422,6 +422,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void UpdateUnlockInputs()
     {
+        if (SecretLabelTextBlock is null || SecretPasswordBox is null || KeyfilePathTextBox is null || BrowseKeyfileButton is null)
+        {
+            return;
+        }
+
         var selectedMode = GetSelectedUnlockMode();
         var usesSecret = selectedMode is HarnessUnlockModes.Passphrase or HarnessUnlockModes.RecoveryKey;
         var usesKeyfile = selectedMode == HarnessUnlockModes.Keyfile;
