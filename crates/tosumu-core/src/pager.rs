@@ -17,7 +17,7 @@ use crate::crypto::{decrypt_page, encrypt_page, generate_dek, derive_subkeys,
     derive_passphrase_kek, pack_kdf_params, wrap_dek, unwrap_dek, compute_kcv, verify_kcv,
     compute_header_mac, verify_header_mac, generate_recovery_secret, derive_recovery_kek,
     ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST};
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 use crate::format::*;
 use crate::wal::{WalRecord, WalWriter, wal_path};
 
@@ -114,9 +114,9 @@ impl Pager {
             }
             KEYSLOT_KIND_PASSPHRASE | KEYSLOT_KIND_RECOVERY_KEY => {
                 // Caller must use open_with_passphrase() or open_with_recovery_key().
-                return Err(TosumError::WrongKey);
+                return Err(TosumuError::WrongKey);
             }
-            _ => return Err(TosumError::NotATosumFile),
+            _ => return Err(TosumuError::NotATosumFile),
         };
 
         let (page_key, _header_mac_key, _audit_key) = derive_subkeys(&dek);
@@ -141,7 +141,7 @@ impl Pager {
 
         // Random 16-byte salt for this slot.
         let mut salt = [0u8; 16];
-        getrandom::getrandom(&mut salt).map_err(|_| TosumError::RngFailed)?;
+        getrandom::getrandom(&mut salt).map_err(|_| TosumuError::RngFailed)?;
 
         // Derive KEK from passphrase.
         let kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
@@ -150,7 +150,7 @@ impl Pager {
         // Generate a unique per-database DEK_ID so that a full-slot splice from a
         // different database fails AEAD unwrap even when the same passphrase is used.
         let mut dek_id_buf = [0u8; 8];
-        getrandom::getrandom(&mut dek_id_buf).map_err(|_| TosumError::RngFailed)?;
+        getrandom::getrandom(&mut dek_id_buf).map_err(|_| TosumuError::RngFailed)?;
         let dek_id = u64::from_le_bytes(dek_id_buf) | 1; // ensure non-zero
 
         // Wrap the DEK.
@@ -286,7 +286,7 @@ impl Pager {
         let slot_idx = find_empty_slot(&page0, keyslot_count)?;
 
         let mut salt = [0u8; 16];
-        getrandom::getrandom(&mut salt).map_err(|_| TosumError::RngFailed)?;
+        getrandom::getrandom(&mut salt).map_err(|_| TosumuError::RngFailed)?;
         let kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let kek = derive_passphrase_kek(new_passphrase, &salt, &kdf_params)?;
         let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
@@ -349,7 +349,7 @@ impl Pager {
         let (_, hmk, _) = derive_subkeys(&dek);
 
         if slot_idx as usize >= keyslot_count {
-            return Err(TosumError::InvalidArgument("slot index out of range"));
+            return Err(TosumuError::InvalidArgument("slot index out of range"));
         }
 
         // Count active slots before removal.
@@ -359,7 +359,7 @@ impl Pager {
         }).count();
 
         if active <= 1 {
-            return Err(TosumError::InvalidArgument("cannot remove the last active keyslot"));
+            return Err(TosumuError::InvalidArgument("cannot remove the last active keyslot"));
         }
 
         // Zero the slot.
@@ -384,13 +384,13 @@ impl Pager {
         let keyslot_count = (read_u16(&page0, OFF_KEYSLOT_COUNT) as usize).max(1).min(MAX_KEYSLOTS);
 
         if slot_idx as usize >= keyslot_count {
-            return Err(TosumError::InvalidArgument("slot index out of range"));
+            return Err(TosumuError::InvalidArgument("slot index out of range"));
         }
 
         // Verify target slot is Passphrase kind.
         let ks = KEYSLOT_REGION_OFFSET + slot_idx as usize * KEYSLOT_SIZE;
         if page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
-            return Err(TosumError::InvalidArgument("slot is not a Passphrase slot"));
+            return Err(TosumuError::InvalidArgument("slot is not a Passphrase slot"));
         }
 
         // Unlock target slot with old passphrase.
@@ -407,7 +407,7 @@ impl Pager {
 
         // Wrap under new passphrase with fresh salt.
         let mut new_salt = [0u8; 16];
-        getrandom::getrandom(&mut new_salt).map_err(|_| TosumError::RngFailed)?;
+        getrandom::getrandom(&mut new_salt).map_err(|_| TosumuError::RngFailed)?;
         let new_kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let new_kek = derive_passphrase_kek(new_passphrase, &new_salt, &new_kdf_params)?;
         let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
@@ -547,7 +547,7 @@ impl Pager {
     /// allocated, or an existing page being re-initialised).
     pub fn init_page(&mut self, pgno: u64, page_type: u8) -> Result<()> {
         if pgno == 0 || pgno > self.page_count {
-            return Err(TosumError::InvalidArgument("invalid page number for initialization"));
+            return Err(TosumuError::InvalidArgument("invalid page number for initialization"));
         }
         let mut plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
         // Set page header: type, free_start, free_end.
@@ -647,10 +647,10 @@ impl Pager {
     /// Validate that `pgno` is a data page: non-zero and within the allocated range.
     fn validate_data_pgno(&self, pgno: u64) -> Result<()> {
         if pgno == 0 {
-            return Err(TosumError::InvalidArgument("page 0 is the file header, not a data page"));
+            return Err(TosumuError::InvalidArgument("page 0 is the file header, not a data page"));
         }
         if pgno >= self.page_count {
-            return Err(TosumError::InvalidArgument("page number out of range"));
+            return Err(TosumuError::InvalidArgument("page number out of range"));
         }
         Ok(())
     }
@@ -691,15 +691,15 @@ fn write_u16_buf(buf: &mut [u8], offset: usize, v: u16) {
 /// Validate magic, format version and page size from a page-0 buffer.
 fn validate_header(page0: &[u8; PAGE_SIZE]) -> Result<()> {
     if !check_magic(page0) {
-        return Err(TosumError::NotATosumFile);
+        return Err(TosumuError::NotATosumFile);
     }
     let fv = read_u16(page0, OFF_FORMAT_VERSION);
     if fv > FORMAT_VERSION {
-        return Err(TosumError::NewerFormat { found: fv, supported_max: FORMAT_VERSION });
+        return Err(TosumuError::NewerFormat { found: fv, supported_max: FORMAT_VERSION });
     }
     let ps = read_u16(page0, OFF_PAGE_SIZE);
     if ps as usize != PAGE_SIZE {
-        return Err(TosumError::PageSizeMismatch { found: ps, expected: PAGE_SIZE as u16 });
+        return Err(TosumuError::PageSizeMismatch { found: ps, expected: PAGE_SIZE as u16 });
     }
     Ok(())
 }
@@ -753,7 +753,7 @@ fn find_empty_slot(page0: &[u8; PAGE_SIZE], keyslot_count: usize) -> Result<u16>
             return Ok(i as u16);
         }
     }
-    Err(TosumError::InvalidArgument("keyslot region is full (all 8 slots occupied)"))
+    Err(TosumuError::InvalidArgument("keyslot region is full (all 8 slots occupied)"))
 }
 
 /// Try to unlock the database using a passphrase, scanning all keyslots.
@@ -796,7 +796,7 @@ fn try_unlock_passphrase(
             return Ok((dek, true));
         }
     }
-    Err(TosumError::WrongKey)
+    Err(TosumuError::WrongKey)
 }
 
 /// Try to unlock the database with a pre-derived KEK, scanning for a specific kind.
@@ -822,7 +822,7 @@ fn try_unlock_with_kek(
             return Ok(dek);
         }
     }
-    Err(TosumError::WrongKey)
+    Err(TosumuError::WrongKey)
 }
 
 /// Complete a Pager open given a derived page_key + optional MAC key.
@@ -840,9 +840,9 @@ fn finish_open(
     let file_len = file.metadata()?.len();
     let expected_len = page_count
         .checked_mul(PAGE_SIZE as u64)
-        .ok_or(TosumError::Corrupt { pgno: 0, reason: "page_count overflow" })?;
+        .ok_or(TosumuError::Corrupt { pgno: 0, reason: "page_count overflow" })?;
     if file_len < expected_len {
-        return Err(TosumError::Corrupt { pgno: 0, reason: "file is truncated" });
+        return Err(TosumuError::Corrupt { pgno: 0, reason: "file is truncated" });
     }
 
     let freelist_head = read_u64(page0, OFF_FREELIST_HEAD);

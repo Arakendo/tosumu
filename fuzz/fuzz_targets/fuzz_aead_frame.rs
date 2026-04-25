@@ -11,7 +11,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use tosumu_core::crypto::{decrypt_page, encrypt_page, derive_subkeys};
-use tosumu_core::error::TosumError;
+use tosumu_core::error::TosumuError;
 use tosumu_core::format::{PAGE_SIZE, PAGE_PLAINTEXT_SIZE};
 
 fuzz_target!(|data: &[u8]| {
@@ -30,7 +30,7 @@ fuzz_target!(|data: &[u8]| {
         let frame: [u8; PAGE_SIZE] = data[..PAGE_SIZE].try_into().unwrap();
 
         match decrypt_page(&page_key, pgno, &frame) {
-            Ok(_) | Err(TosumError::AuthFailed { .. }) => {}
+            Ok(_) | Err(TosumuError::AuthFailed { .. }) => {}
             Err(e) => panic!("unexpected error from decrypt_page: {e:?}"),
         }
     }
@@ -67,7 +67,7 @@ fuzz_target!(|data: &[u8]| {
                     Err(e) => panic!("encrypt-then-decrypt failed: {e:?}"),
                 }
             }
-            Err(TosumError::EncryptFailed) => {} // AEAD library error — acceptable
+            Err(TosumuError::EncryptFailed) => {} // AEAD library error — acceptable
             Err(e) => panic!("unexpected encrypt_page error: {e:?}"),
         }
     }

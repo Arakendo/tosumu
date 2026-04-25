@@ -22,13 +22,13 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 use crate::format::PAGE_SIZE;
 
 // ── Transient-lock retry ─────────────────────────────────────────────────────
 
 /// Default maximum number of retry attempts when a transient file-lock error is
-/// encountered before giving up with `TosumError::FileBusy`.
+/// encountered before giving up with `TosumuError::FileBusy`.
 ///
 /// Each retry waits 10 ms in production (skipped in tests).  Total worst-case
 /// wait with the default is `DEFAULT_MAX_RETRIES × 10 ms = 50 ms`.
@@ -75,7 +75,7 @@ fn inject_or_open(open_fn: &impl Fn() -> std::io::Result<File>) -> std::io::Resu
 ///
 /// Makes up to `max_retries + 1` attempts.  Each transient failure (lock held
 /// by another process) waits 10 ms before retrying.  After exhausting all
-/// attempts returns `TosumError::FileBusy { path, operation }`.
+/// attempts returns `TosumuError::FileBusy { path, operation }`.
 ///
 /// Non-transient errors (permission denied, file not found, …) propagate
 /// immediately without retrying.
@@ -108,7 +108,7 @@ where
             }
             Err(e) if is_transient_lock(&e) => {
                 // Retries exhausted — report as FileBusy.
-                return Err(TosumError::FileBusy {
+                return Err(TosumuError::FileBusy {
                     path: path.to_path_buf(),
                     operation,
                 });
@@ -342,14 +342,14 @@ impl WalReader {
         let mut payload = vec![0u8; payload_len];
         self.reader.read_exact(&mut payload).map_err(|e| {
             if e.kind() == ErrorKind::UnexpectedEof {
-                TosumError::CorruptRecord { offset: 0, reason: "WAL record truncated in payload" }
+                TosumuError::CorruptRecord { offset: 0, reason: "WAL record truncated in payload" }
             } else { e.into() }
         })?;
 
         let mut crc_bytes = [0u8; 4];
         self.reader.read_exact(&mut crc_bytes).map_err(|e| {
             if e.kind() == ErrorKind::UnexpectedEof {
-                TosumError::CorruptRecord { offset: 0, reason: "WAL record truncated in CRC" }
+                TosumuError::CorruptRecord { offset: 0, reason: "WAL record truncated in CRC" }
             } else { e.into() }
         })?;
         let stored_crc = u32::from_le_bytes(crc_bytes);
@@ -360,7 +360,7 @@ impl WalReader {
         covered.extend_from_slice(&payload);
         let computed_crc = crc32fast::hash(&covered);
         if computed_crc != stored_crc {
-            return Err(TosumError::CorruptRecord {
+            return Err(TosumuError::CorruptRecord {
                 offset: 0,
                 reason: "WAL record CRC mismatch",
             });
@@ -379,7 +379,7 @@ impl WalReader {
                 Ok(Some(r)) => out.push(r),
                 Ok(None) => break,
                 // Stop on corruption — the tail may be a partial write.
-                Err(TosumError::CorruptRecord { .. }) => break,
+                Err(TosumuError::CorruptRecord { .. }) => break,
                 Err(e) => return Err(e),
             }
         }
@@ -508,14 +508,14 @@ fn decode_payload(record_type: u8, payload: &[u8]) -> Result<WalRecord> {
     match record_type {
         RT_BEGIN => {
             if payload.len() < 8 {
-                return Err(TosumError::CorruptRecord { offset: 0, reason: "Begin payload too short" });
+                return Err(TosumuError::CorruptRecord { offset: 0, reason: "Begin payload too short" });
             }
             Ok(WalRecord::Begin { txn_id: u64::from_le_bytes(payload[0..8].try_into().unwrap()) })
         }
         RT_PAGE_WRITE => {
             let expected = 8 + 8 + PAGE_SIZE;
             if payload.len() < expected {
-                return Err(TosumError::CorruptRecord { offset: 0, reason: "PageWrite payload too short" });
+                return Err(TosumuError::CorruptRecord { offset: 0, reason: "PageWrite payload too short" });
             }
             let pgno         = u64::from_le_bytes(payload[0..8].try_into().unwrap());
             let page_version = u64::from_le_bytes(payload[8..16].try_into().unwrap());
@@ -525,17 +525,17 @@ fn decode_payload(record_type: u8, payload: &[u8]) -> Result<WalRecord> {
         }
         RT_COMMIT => {
             if payload.len() < 8 {
-                return Err(TosumError::CorruptRecord { offset: 0, reason: "Commit payload too short" });
+                return Err(TosumuError::CorruptRecord { offset: 0, reason: "Commit payload too short" });
             }
             Ok(WalRecord::Commit { txn_id: u64::from_le_bytes(payload[0..8].try_into().unwrap()) })
         }
         RT_CHECKPOINT => {
             if payload.len() < 8 {
-                return Err(TosumError::CorruptRecord { offset: 0, reason: "Checkpoint payload too short" });
+                return Err(TosumuError::CorruptRecord { offset: 0, reason: "Checkpoint payload too short" });
             }
             Ok(WalRecord::Checkpoint { up_to_lsn: u64::from_le_bytes(payload[0..8].try_into().unwrap()) })
         }
-        _ => Err(TosumError::CorruptRecord { offset: 0, reason: "unknown WAL record type" }),
+        _ => Err(TosumuError::CorruptRecord { offset: 0, reason: "unknown WAL record type" }),
     }
 }
 
@@ -1085,7 +1085,7 @@ mod tests {
     // ── Lock-retry / FileBusy tests ───────────────────────────────────────────
 
     /// After all retry attempts are exhausted with injected lock errors,
-    /// `recover()` must return `TosumError::FileBusy` and leave both the
+    /// `recover()` must return `TosumuError::FileBusy` and leave both the
     /// database file and the WAL sidecar byte-for-byte unchanged.
     ///
     /// This verifies the invariant: lock errors are not corruption.
@@ -1119,7 +1119,7 @@ mod tests {
 
         let err = recover(&db_p, &wal_p).unwrap_err();
         assert!(
-            matches!(err, TosumError::FileBusy { .. }),
+            matches!(err, TosumuError::FileBusy { .. }),
             "expected FileBusy, got {err:?}",
         );
 
@@ -1165,7 +1165,7 @@ mod tests {
         let _ = std::fs::remove_file(&wal_p);
     }
 
-    /// `TosumError::FileBusy` must carry the path of the locked file and a
+    /// `TosumuError::FileBusy` must carry the path of the locked file and a
     /// non-empty operation description — not silently swallowed as `Corrupt`.
     #[test]
     fn file_busy_error_contains_path_and_operation() {
@@ -1189,7 +1189,7 @@ mod tests {
 
         // recover() opens the WAL first — FileBusy path must be the WAL path.
         match recover(&db_p, &wal_p).unwrap_err() {
-            TosumError::FileBusy { path, operation } => {
+            TosumuError::FileBusy { path, operation } => {
                 assert_eq!(path, wal_p, "FileBusy must identify the locked file");
                 assert_eq!(operation, "opening WAL for record replay",
                     "operation must identify which step failed");

@@ -16,7 +16,7 @@
 use std::path::Path;
 
 use crate::btree::BTree;
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 
 /// High-level key-value store backed by the B+ tree.
 pub struct PageStore {
@@ -117,10 +117,10 @@ impl PageStore {
     /// Return all live key-value pairs where `start <= key <= end`, sorted by key.
     pub fn scan_range(&self, start: &[u8], end: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         if start.is_empty() {
-            return Err(TosumError::InvalidArgument("start key must not be empty"));
+            return Err(TosumuError::InvalidArgument("start key must not be empty"));
         }
         if end.is_empty() {
-            return Err(TosumError::InvalidArgument("end key must not be empty"));
+            return Err(TosumuError::InvalidArgument("end key must not be empty"));
         }
         self.tree.scan_by_key(start, end)
     }
@@ -167,17 +167,17 @@ impl PageStore {
 
 fn validate_key(key: &[u8]) -> Result<()> {
     if key.is_empty() {
-        return Err(TosumError::InvalidArgument("key must not be empty"));
+        return Err(TosumuError::InvalidArgument("key must not be empty"));
     }
     if key.len() > u16::MAX as usize {
-        return Err(TosumError::InvalidArgument("key exceeds u16 maximum"));
+        return Err(TosumuError::InvalidArgument("key exceeds u16 maximum"));
     }
     Ok(())
 }
 
 fn validate_value(value: &[u8]) -> Result<()> {
     if value.len() > u16::MAX as usize {
-        return Err(TosumError::InvalidArgument("value exceeds u16 maximum"));
+        return Err(TosumuError::InvalidArgument("value exceeds u16 maximum"));
     }
     Ok(())
 }
@@ -321,7 +321,7 @@ mod tests {
 
         let store = PageStore::open(&path).unwrap();
         let err = store.get(b"key").unwrap_err();
-        assert!(matches!(err, crate::error::TosumError::AuthFailed { .. }));
+        assert!(matches!(err, crate::error::TosumuError::AuthFailed { .. }));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -361,7 +361,7 @@ mod tests {
         let mut store = PageStore::create(&path).unwrap();
         let result: Result<()> = store.transaction(|tx| {
             tx.put(b"x", b"lost")?;
-            Err(crate::error::TosumError::InvalidArgument("deliberate rollback"))
+            Err(crate::error::TosumuError::InvalidArgument("deliberate rollback"))
         });
         assert!(result.is_err());
         assert_eq!(store.get(b"x").unwrap(), None, "rolled-back write must not be visible");
@@ -425,7 +425,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "wrong-horse").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::WrongKey),
             "expected WrongKey, got {err:?}"
         );
 
@@ -442,7 +442,7 @@ mod tests {
         // Plain open() must refuse, not panic or silently succeed.
         let err = PageStore::open(&path).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::WrongKey),
             "expected WrongKey, got {err:?}"
         );
 
@@ -524,7 +524,7 @@ mod tests {
 
         let err = PageStore::open_with_recovery_key(&path, "AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD")
             .err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "got {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -538,7 +538,7 @@ mod tests {
 
         let err = PageStore::remove_keyslot(&path, "only-pass", 0).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::InvalidArgument(_)),
+            matches!(err, crate::error::TosumuError::InvalidArgument(_)),
             "expected InvalidArgument, got {err:?}"
         );
 
@@ -559,7 +559,7 @@ mod tests {
         drop(store);
         // Removed pass no longer works.
         let err = PageStore::open_with_passphrase(&path, "extra").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "got {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -573,7 +573,7 @@ mod tests {
         PageStore::rekey_kek(&path, 0, "old-pass", "new-pass").unwrap();
 
         let err = PageStore::open_with_passphrase(&path, "old-pass").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "old pass still works: {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "old pass still works: {err:?}");
 
         PageStore::open_with_passphrase(&path, "new-pass").unwrap();
 
@@ -624,7 +624,7 @@ mod tests {
         // Opening with pass-a must fail (MAC or DEK unwrap mismatch).
         let err = PageStore::open_with_passphrase(&path_a, "pass-a").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "expected auth failure, got {err:?}"
         );
 
@@ -646,7 +646,7 @@ mod tests {
 
         let err = PageStore::open(&path).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::NotATosumFile),
+            matches!(err, crate::error::TosumuError::NotATosumFile),
             "expected NotATosumFile, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -666,7 +666,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::AuthFailed { .. } | crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
             "expected AuthFailed or WrongKey, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -686,7 +686,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "expected WrongKey or AuthFailed, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -706,7 +706,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "expected WrongKey or AuthFailed, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -732,7 +732,7 @@ mod tests {
         let store = PageStore::open_with_passphrase(&path, "p").unwrap();
         let err = store.get(b"key").unwrap_err();
         assert!(
-            matches!(err, crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::AuthFailed { .. }),
             "expected AuthFailed, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -765,7 +765,7 @@ mod tests {
 
         let err = PageStore::open(&path).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::NotATosumFile | crate::error::TosumError::Io(_)),
+            matches!(err, crate::error::TosumuError::NotATosumFile | crate::error::TosumuError::Io(_)),
             "expected NotATosumFile or Io, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -783,8 +783,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    fn result_is_err_io_or_not_tosum(e: &crate::error::TosumError) -> bool {
-        matches!(e, crate::error::TosumError::NotATosumFile | crate::error::TosumError::Io(_))
+    fn result_is_err_io_or_not_tosum(e: &crate::error::TosumuError) -> bool {
+        matches!(e, crate::error::TosumuError::NotATosumFile | crate::error::TosumuError::Io(_))
     }
 
     // ── Key management edge cases ─────────────────────────────────────────────
@@ -804,7 +804,7 @@ mod tests {
         // 9th add must fail.
         let err = PageStore::add_passphrase_protector(&path, "p0", "p8").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::InvalidArgument(_)),
+            matches!(err, crate::error::TosumuError::InvalidArgument(_)),
             "expected InvalidArgument (full), got {err:?}"
         );
         // All 8 original passphrases still work.
@@ -830,7 +830,7 @@ mod tests {
 
         // Old passphrase must fail.
         let err = PageStore::open_with_passphrase(&path, "orig").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "old pass still works: {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "old pass still works: {err:?}");
         // New passphrase works.
         PageStore::open_with_passphrase(&path, "new-pass").unwrap();
         // Recovery key still works.
@@ -847,7 +847,7 @@ mod tests {
 
         PageStore::create_encrypted(&path, "correct").unwrap();
         let err = PageStore::rekey_kek(&path, 0, "wrong", "new").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "got {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
 
         // Original passphrase still works after failed rekey.
         PageStore::open_with_passphrase(&path, "correct").unwrap();
@@ -883,7 +883,7 @@ mod tests {
         // Slot 99 doesn't exist — should fail without removing anything.
         let err = PageStore::remove_keyslot(&path, "p", 99).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::InvalidArgument(_) | crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::InvalidArgument(_) | crate::error::TosumuError::WrongKey),
             "expected InvalidArgument or WrongKey, got {err:?}"
         );
         // Both slots still work.
@@ -932,7 +932,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::AuthFailed { .. } | crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
             "expected auth failure, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -962,7 +962,7 @@ mod tests {
 
         let mut store = PageStore::create(&path).unwrap();
         let err = store.put(b"", b"v").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::InvalidArgument(_)));
+        assert!(matches!(err, crate::error::TosumuError::InvalidArgument(_)));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1126,7 +1126,7 @@ mod tests {
         // Opening B with the shared passphrase must fail — MAC was computed over A's keyslot data.
         let err = PageStore::open_with_passphrase(&path_b, "shared-pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "cross-DB splice must be rejected, got {err:?}"
         );
 
@@ -1183,7 +1183,7 @@ mod tests {
         PageStore::open_with_passphrase(&path, "old").unwrap();
         // New passphrase must not.
         let err = PageStore::open_with_passphrase(&path, "new").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "got {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1216,13 +1216,13 @@ mod tests {
         // old pass: AEAD unwrap of new slot with old KEK fails → WrongKey.
         let err = PageStore::open_with_passphrase(&path, "old").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::WrongKey),
             "old pass on torn page should be WrongKey, got {err:?}"
         );
         // new pass: DEK unwraps fine from the new slot, but old MAC doesn't match → AuthFailed.
         let err2 = PageStore::open_with_passphrase(&path, "new").err().unwrap();
         assert!(
-            matches!(err2, crate::error::TosumError::AuthFailed { .. }),
+            matches!(err2, crate::error::TosumuError::AuthFailed { .. }),
             "new pass on torn page should be AuthFailed (stale MAC), got {err2:?}"
         );
 
@@ -1247,7 +1247,7 @@ mod tests {
         // Original works, extra does not.
         PageStore::open_with_passphrase(&path, "main").unwrap();
         let err = PageStore::open_with_passphrase(&path, "extra").err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "got {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
 
         // Only 1 slot listed.
         let slots = PageStore::list_keyslots(&path).unwrap();
@@ -1329,7 +1329,7 @@ mod tests {
         // It must not — the MAC is now broken.
         let err = PageStore::open_with_passphrase(&path, "pass-a").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "stale blob in reused slot must not unlock: {err:?}"
         );
 
@@ -1434,7 +1434,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::AuthFailed { .. } | crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
             "kind byte flip must be caught by MAC: {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1463,7 +1463,7 @@ mod tests {
         // If it fails, the MAC caught the tampered count field.
         if let Err(e) = &result {
             assert!(
-                matches!(e, crate::error::TosumError::AuthFailed { .. } | crate::error::TosumError::WrongKey),
+                matches!(e, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
                 "unexpected error: {e:?}"
             );
         }
@@ -1487,7 +1487,7 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "nonce flip must fail: {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1522,7 +1522,7 @@ mod tests {
                 );
                 let e = result.err().unwrap();
                 assert!(
-                    !matches!(e, crate::error::TosumError::Corrupt { .. }),
+                    !matches!(e, crate::error::TosumuError::Corrupt { .. }),
                     "bit flip at byte {byte_off} bit {bit} caused Corrupt (should be AuthFailed/WrongKey): {e:?}"
                 );
             }
@@ -1562,7 +1562,7 @@ mod tests {
         // differs from the DEK_ID baked into A's AEAD ciphertext.
         let err = PageStore::open_with_passphrase(&path_b, "shared").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::WrongKey | crate::error::TosumError::AuthFailed { .. }),
+            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
             "full slot splice from different DB must be rejected: {err:?}"
         );
 
@@ -1592,7 +1592,7 @@ mod tests {
 
         // Recovery key is gone.
         let err = PageStore::open_with_recovery_key(&path, &recovery).err().unwrap();
-        assert!(matches!(err, crate::error::TosumError::WrongKey), "got {err:?}");
+        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
 
         // Main passphrase still works (was in snapshot).
         PageStore::open_with_passphrase(&path, "main").unwrap();
@@ -1648,12 +1648,12 @@ mod tests {
 
         let err = PageStore::open_with_passphrase(&path, "p").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumError::AuthFailed { .. } | crate::error::TosumError::WrongKey),
+            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
             "hybrid header+keyslot must be rejected by MAC: {err:?}"
         );
         let err2 = PageStore::open_with_passphrase(&path, "p2").err().unwrap();
         assert!(
-            matches!(err2, crate::error::TosumError::AuthFailed { .. } | crate::error::TosumError::WrongKey),
+            matches!(err2, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
             "hybrid must reject new pass too: {err2:?}"
         );
 

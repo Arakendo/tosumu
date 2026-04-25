@@ -15,7 +15,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::Path;
 
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 
 const DELETE_SENTINEL: u32 = u32::MAX;
 
@@ -94,17 +94,17 @@ impl LogStore {
 
 fn validate_key(key: &[u8]) -> Result<()> {
     if key.is_empty() {
-        return Err(TosumError::InvalidArgument("key must not be empty"));
+        return Err(TosumuError::InvalidArgument("key must not be empty"));
     }
     if key.len() > MAX_KEY_LEN {
-        return Err(TosumError::InvalidArgument("key exceeds maximum length"));
+        return Err(TosumuError::InvalidArgument("key exceeds maximum length"));
     }
     Ok(())
 }
 
 fn validate_value(value: &[u8]) -> Result<()> {
     if value.len() > MAX_VAL_LEN {
-        return Err(TosumError::InvalidArgument("value exceeds maximum length"));
+        return Err(TosumuError::InvalidArgument("value exceeds maximum length"));
     }
     Ok(())
 }
@@ -151,14 +151,14 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
         let val_len_raw = u32::from_le_bytes(header[4..8].try_into().unwrap());
 
         if key_len == 0 || key_len > MAX_KEY_LEN {
-            return Err(TosumError::CorruptRecord {
+            return Err(TosumuError::CorruptRecord {
                 offset,
                 reason: "key_len out of range",
             });
         }
 
         let mut key = vec![0u8; key_len];
-        reader.read_exact(&mut key).map_err(|_| TosumError::CorruptRecord {
+        reader.read_exact(&mut key).map_err(|_| TosumuError::CorruptRecord {
             offset,
             reason: "unexpected EOF reading key",
         })?;
@@ -168,13 +168,13 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
         } else {
             let val_len = val_len_raw as usize;
             if val_len > MAX_VAL_LEN {
-                return Err(TosumError::CorruptRecord {
+                return Err(TosumuError::CorruptRecord {
                     offset,
                     reason: "val_len out of range",
                 });
             }
             let mut value = vec![0u8; val_len];
-            reader.read_exact(&mut value).map_err(|_| TosumError::CorruptRecord {
+            reader.read_exact(&mut value).map_err(|_| TosumuError::CorruptRecord {
                 offset,
                 reason: "unexpected EOF reading value",
             })?;
@@ -197,14 +197,14 @@ fn read_exact_or_eof(reader: &mut impl Read, buf: &mut [u8]) -> Result<bool> {
                 if total == 0 {
                     return Ok(false); // clean EOF
                 }
-                return Err(TosumError::CorruptRecord {
+                return Err(TosumuError::CorruptRecord {
                     offset: total as u64,
                     reason: "unexpected EOF in record header",
                 });
             }
             Ok(n) => total += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(TosumError::Io(e)),
+            Err(e) => return Err(TosumuError::Io(e)),
         }
     }
     Ok(true)

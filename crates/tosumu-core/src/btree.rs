@@ -34,7 +34,7 @@
 
 use std::path::Path;
 
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 use crate::format::*;
 use crate::pager::Pager;
 
@@ -83,7 +83,7 @@ impl BTree {
     pub fn open(path: &Path) -> Result<Self> {
         let pager = Pager::open(path)?;
         if pager.root_page() == 0 {
-            return Err(TosumError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
+            return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
         }
         Ok(BTree { pager })
     }
@@ -92,7 +92,7 @@ impl BTree {
     pub fn open_with_passphrase(path: &Path, passphrase: &str) -> Result<Self> {
         let pager = Pager::open_with_passphrase(path, passphrase)?;
         if pager.root_page() == 0 {
-            return Err(TosumError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
+            return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
         }
         Ok(BTree { pager })
     }
@@ -101,7 +101,7 @@ impl BTree {
     pub fn open_with_recovery_key(path: &Path, recovery_str: &str) -> Result<Self> {
         let pager = Pager::open_with_recovery_key(path, recovery_str)?;
         if pager.root_page() == 0 {
-            return Err(TosumError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
+            return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
         }
         Ok(BTree { pager })
     }
@@ -263,7 +263,7 @@ impl BTree {
                 match page[HDR_PAGE_TYPE] {
                     PAGE_TYPE_LEAF => {}
                     PAGE_TYPE_INTERNAL => return Ok(()),
-                    _ => return Err(TosumError::Corrupt {
+                    _ => return Err(TosumuError::Corrupt {
                         pgno,
                         reason: "unknown page type in physical scan",
                     }),
@@ -341,7 +341,7 @@ impl BTree {
                 PAGE_TYPE_INTERNAL => {
                     pgno = self.pager.with_page(pgno, |page| internal_find_child(page, pgno, key))?;
                 }
-                _ => return Err(TosumError::Corrupt { pgno, reason: "unexpected page type during traversal" }),
+                _ => return Err(TosumuError::Corrupt { pgno, reason: "unexpected page type during traversal" }),
             }
         }
     }
@@ -509,11 +509,11 @@ impl BTree {
     pub fn check_invariants(&self) -> Result<()> {
         let root = self.pager.root_page();
         if root == 0 {
-            return Err(TosumError::Corrupt { pgno: 0, reason: "root_page is 0" });
+            return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0" });
         }
         let root_type = self.pager.with_page(root, |p| Ok(p[HDR_PAGE_TYPE]))?;
         if root_type != PAGE_TYPE_LEAF && root_type != PAGE_TYPE_INTERNAL {
-            return Err(TosumError::Corrupt { pgno: root, reason: "root has unexpected page type" });
+            return Err(TosumuError::Corrupt { pgno: root, reason: "root has unexpected page type" });
         }
         self.inv_check_subtree(root)?;
         self.inv_check_leaf_chain(root)?;
@@ -543,7 +543,7 @@ impl BTree {
                 // Verify explicitly for the invariant record.
                 for i in 1..live_keys.len() {
                     if live_keys[i] <= live_keys[i - 1] {
-                        return Err(TosumError::Corrupt {
+                        return Err(TosumuError::Corrupt {
                             pgno,
                             reason: "leaf live keys are not strictly sorted",
                         });
@@ -557,7 +557,7 @@ impl BTree {
                     Ok(internal_read_all(page))
                 })?;
                 if leftmost == 0 {
-                    return Err(TosumError::Corrupt {
+                    return Err(TosumuError::Corrupt {
                         pgno,
                         reason: "internal page has zero leftmost child",
                     });
@@ -567,7 +567,7 @@ impl BTree {
                 // Separators must be distinct.
                 for i in 1..entries.len() {
                     if entries[i].0 == entries[i - 1].0 {
-                        return Err(TosumError::Corrupt {
+                        return Err(TosumuError::Corrupt {
                             pgno,
                             reason: "internal page contains duplicate separator keys",
                         });
@@ -576,7 +576,7 @@ impl BTree {
                 // All right-child pgnos must be non-zero.
                 for (_, child) in &entries {
                     if *child == 0 {
-                        return Err(TosumError::Corrupt {
+                        return Err(TosumuError::Corrupt {
                             pgno,
                             reason: "internal slot has zero right child",
                         });
@@ -587,7 +587,7 @@ impl BTree {
                 // leftmost child's max must be < first separator.
                 if let (Some(ref max_k), Some(first_sep)) = (&lc_max, entries.first()) {
                     if max_k.as_slice() >= first_sep.0.as_slice() {
-                        return Err(TosumError::Corrupt {
+                        return Err(TosumuError::Corrupt {
                             pgno,
                             reason: "leftmost child max key >= first separator (routing error)",
                         });
@@ -600,7 +600,7 @@ impl BTree {
                     let (sep_key, right_child) = &entries[i];
                     let (child_min, child_max, child_depth) = self.inv_check_subtree(*right_child)?;
                     if child_depth != depth {
-                        return Err(TosumError::Corrupt {
+                        return Err(TosumuError::Corrupt {
                             pgno,
                             reason: "children are at different depths (unbalanced tree)",
                         });
@@ -608,7 +608,7 @@ impl BTree {
                     // child min must be >= sep_key.
                     if let Some(ref min_k) = child_min {
                         if min_k.as_slice() < sep_key.as_slice() {
-                            return Err(TosumError::Corrupt {
+                            return Err(TosumuError::Corrupt {
                                 pgno,
                                 reason: "right subtree min key < separator (routing error)",
                             });
@@ -618,7 +618,7 @@ impl BTree {
                     if let Some(ref max_k) = child_max {
                         if let Some(next_sep) = entries.get(i + 1) {
                             if max_k.as_slice() >= next_sep.0.as_slice() {
-                                return Err(TosumError::Corrupt {
+                                return Err(TosumuError::Corrupt {
                                     pgno,
                                     reason: "right subtree max key >= next separator (routing error)",
                                 });
@@ -642,7 +642,7 @@ impl BTree {
                 }
                 Ok((overall_min, overall_max, 1 + depth))
             }
-            _ => Err(TosumError::Corrupt {
+            _ => Err(TosumuError::Corrupt {
                 pgno,
                 reason: "unexpected page type in tree traversal",
             }),
@@ -666,7 +666,7 @@ impl BTree {
         loop {
             let (live_keys, next) = self.pager.with_page(pgno, |page| {
                 if page[HDR_PAGE_TYPE] != PAGE_TYPE_LEAF {
-                    return Err(TosumError::Corrupt {
+                    return Err(TosumuError::Corrupt {
                         pgno,
                         reason: "non-leaf page encountered in leaf chain",
                     });
@@ -679,7 +679,7 @@ impl BTree {
             })?;
             if let (Some(ref prev), Some(first)) = (&prev_max, live_keys.first()) {
                 if first <= prev {
-                    return Err(TosumError::Corrupt {
+                    return Err(TosumuError::Corrupt {
                         pgno,
                         reason: "leaf chain out of order: first key <= previous leaf max key",
                     });
@@ -687,7 +687,7 @@ impl BTree {
             }
             for k in &live_keys {
                 if !seen.insert(k.clone()) {
-                    return Err(TosumError::Corrupt {
+                    return Err(TosumuError::Corrupt {
                         pgno,
                         reason: "duplicate live key found in leaf chain",
                     });
@@ -728,13 +728,13 @@ fn read_internal_slot(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, i: usize) -> 
     let off = read_u16(page, slot_pos) as usize;
     let len = read_u16(page, slot_pos + 2) as usize;
     if off + len > PAGE_PLAINTEXT_SIZE || len < INTERNAL_RECORD_OVERHEAD {
-        return Err(TosumError::Corrupt { pgno, reason: "invalid internal slot" });
+        return Err(TosumuError::Corrupt { pgno, reason: "invalid internal slot" });
     }
     let rec = &page[off..off + len];
     let right_child = u64::from_le_bytes(rec[0..8].try_into().unwrap());
     let key_len = u16::from_le_bytes([rec[8], rec[9]]) as usize;
     if 10 + key_len > len {
-        return Err(TosumError::Corrupt { pgno, reason: "internal slot key overflow" });
+        return Err(TosumuError::Corrupt { pgno, reason: "internal slot key overflow" });
     }
     Ok((rec[10..10 + key_len].to_vec(), right_child))
 }
@@ -837,7 +837,7 @@ fn leaf_slot_append(page: &mut [u8; PAGE_PLAINTEXT_SIZE], record: &[u8]) -> Resu
     let free_end = read_u16(page, HDR_FREE_END) as usize;
 
     if free_end.saturating_sub(free_start) < SLOT_SIZE + record.len() {
-        return Err(TosumError::OutOfSpace);
+        return Err(TosumuError::OutOfSpace);
     }
 
     let rec_offset = free_end - record.len();
@@ -887,26 +887,26 @@ fn inv_check_slots(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64) -> Result<()> {
     let free_end    = read_u16(page, HDR_FREE_END)   as usize;
     let slot_array_end = PAGE_HEADER_SIZE + slot_count * SLOT_SIZE;
     if slot_array_end > free_start {
-        return Err(TosumError::Corrupt { pgno, reason: "slot array end exceeds free_start" });
+        return Err(TosumuError::Corrupt { pgno, reason: "slot array end exceeds free_start" });
     }
     if free_start > free_end {
-        return Err(TosumError::Corrupt { pgno, reason: "free_start > free_end" });
+        return Err(TosumuError::Corrupt { pgno, reason: "free_start > free_end" });
     }
     if free_end > PAGE_PLAINTEXT_SIZE {
-        return Err(TosumError::Corrupt { pgno, reason: "free_end > PAGE_PLAINTEXT_SIZE" });
+        return Err(TosumuError::Corrupt { pgno, reason: "free_end > PAGE_PLAINTEXT_SIZE" });
     }
     for i in 0..slot_count {
         let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
         let off = read_u16(page, slot_pos) as usize;
         let len = read_u16(page, slot_pos + 2) as usize;
         if len == 0 {
-            return Err(TosumError::Corrupt { pgno, reason: "slot has zero length" });
+            return Err(TosumuError::Corrupt { pgno, reason: "slot has zero length" });
         }
         if off < free_end {
-            return Err(TosumError::Corrupt { pgno, reason: "slot offset below free_end (overlaps free area)" });
+            return Err(TosumuError::Corrupt { pgno, reason: "slot offset below free_end (overlaps free area)" });
         }
         if off + len > PAGE_PLAINTEXT_SIZE {
-            return Err(TosumError::Corrupt { pgno, reason: "slot offset+length exceeds page boundary" });
+            return Err(TosumuError::Corrupt { pgno, reason: "slot offset+length exceeds page boundary" });
         }
     }
     Ok(())

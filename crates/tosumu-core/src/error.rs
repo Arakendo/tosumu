@@ -4,7 +4,7 @@ use thiserror::Error;
 ///
 /// The full variant taxonomy is in DESIGN.md §9.
 #[derive(Debug, Error)]
-pub enum TosumError {
+pub enum TosumuError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -55,4 +55,4 @@ pub enum TosumError {
     WrongKey,
 }
 
-pub type Result<T> = std::result::Result<T, TosumError>;
+pub type Result<T> = std::result::Result<T, TosumuError>;

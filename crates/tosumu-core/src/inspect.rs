@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 use crate::format::*;
 use crate::pager::Pager;
 
@@ -43,7 +43,7 @@ pub fn read_header_info(path: &Path) -> Result<HeaderInfo> {
     file.read_exact(&mut page0)?;
 
     if !check_magic(&page0) {
-        return Err(TosumError::NotATosumFile);
+        return Err(TosumuError::NotATosumFile);
     }
 
     let ks = KEYSLOT_REGION_OFFSET;
@@ -73,7 +73,7 @@ pub fn read_header_info(path: &Path) -> Result<HeaderInfo> {
 pub fn read_raw_frame(path: &Path, pgno: u64) -> Result<[u8; PAGE_SIZE]> {
     let offset = pgno
         .checked_mul(PAGE_SIZE as u64)
-        .ok_or(TosumError::InvalidArgument("page number overflow"))?;
+        .ok_or(TosumuError::InvalidArgument("page number overflow"))?;
     let mut file = File::open(path)?;
     let mut frame = [0u8; PAGE_SIZE];
     file.seek(SeekFrom::Start(offset))?;
@@ -108,14 +108,14 @@ pub struct PageSummary {
 /// Opens the pager internally (read-write, matching `Pager::open`).
 pub fn inspect_page(path: &Path, pgno: u64) -> Result<PageSummary> {
     if pgno == 0 {
-        return Err(TosumError::InvalidArgument(
+        return Err(TosumuError::InvalidArgument(
             "page 0 is the file header; use `dump` without --page to view it",
         ));
     }
 
     let pager = Pager::open(path)?;
     if pgno >= pager.page_count() {
-        return Err(TosumError::InvalidArgument("page number out of range"));
+        return Err(TosumuError::InvalidArgument("page number out of range"));
     }
 
     let (plaintext, page_version) = pager.read_page(pgno)?;
@@ -236,7 +236,7 @@ pub fn verify_file(path: &Path) -> Result<VerifyReport> {
                     issue: None,
                 });
             }
-            Err(TosumError::AuthFailed { .. }) => {
+            Err(TosumuError::AuthFailed { .. }) => {
                 let desc = "authentication tag mismatch (page corrupted or tampered)"
                     .to_owned();
                 issues.push(VerifyIssue { pgno, description: desc.clone() });
@@ -247,7 +247,7 @@ pub fn verify_file(path: &Path) -> Result<VerifyReport> {
                     issue: Some(desc),
                 });
             }
-            Err(TosumError::Corrupt { reason, .. }) => {
+            Err(TosumuError::Corrupt { reason, .. }) => {
                 let desc = format!("corrupt: {reason}");
                 issues.push(VerifyIssue { pgno, description: desc.clone() });
                 page_results.push(PageVerifyResult {

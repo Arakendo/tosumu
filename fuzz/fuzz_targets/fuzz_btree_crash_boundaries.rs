@@ -17,7 +17,7 @@ use libfuzzer_sys::fuzz_target;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tosumu_core::btree::BTree;
-use tosumu_core::error::TosumError;
+use tosumu_core::error::TosumuError;
 use tosumu_core::page_store::PageStore;
 use tosumu_core::wal::wal_path;
 
@@ -103,7 +103,7 @@ fuzz_target!(|data: &[u8]| {
                 panic!("check_invariants failed after crash recovery: {e}");
             }
         }
-        Err(TosumError::AuthFailed { pgno }) => {
+        Err(TosumuError::AuthFailed { pgno }) => {
             // A committed page that was fully fsynced to .tsm failed AEAD
             // decryption. This must never happen from a clean WAL truncation —
             // the .tsm is only written AFTER WAL Commit+fsync, so truncating

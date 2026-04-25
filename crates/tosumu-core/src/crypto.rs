@@ -15,7 +15,7 @@ use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
-use crate::error::{Result, TosumError};
+use crate::error::{Result, TosumuError};
 use crate::format::{
     PAGE_SIZE, PAGE_PLAINTEXT_SIZE, NONCE_SIZE, TAG_SIZE,
     PAGE_VERSION_OFFSET, PAGE_VERSION_SIZE, CIPHERTEXT_OFFSET,
@@ -26,14 +26,14 @@ use crate::format::{
 /// Generate a fresh 32-byte DEK from the OS random source.
 pub fn generate_dek() -> Result<[u8; 32]> {
     let mut dek = [0u8; 32];
-    getrandom::getrandom(&mut dek).map_err(|_| TosumError::RngFailed)?;
+    getrandom::getrandom(&mut dek).map_err(|_| TosumuError::RngFailed)?;
     Ok(dek)
 }
 
 /// Generate a random 12-byte nonce for page encryption.
 pub fn random_nonce() -> Result<[u8; 12]> {
     let mut n = [0u8; 12];
-    getrandom::getrandom(&mut n).map_err(|_| TosumError::RngFailed)?;
+    getrandom::getrandom(&mut n).map_err(|_| TosumuError::RngFailed)?;
     Ok(n)
 }
 
@@ -82,10 +82,10 @@ pub fn encrypt_page(
             nonce.as_slice().into(),
             Payload { msg: plaintext.as_slice(), aad: &aad },
         )
-        .map_err(|_| TosumError::EncryptFailed)?;
+        .map_err(|_| TosumuError::EncryptFailed)?;
 
     if ciphertext.len() != PAGE_PLAINTEXT_SIZE + TAG_SIZE {
-        return Err(TosumError::EncryptFailed);
+        return Err(TosumuError::EncryptFailed);
     }
 
     let mut frame = [0u8; PAGE_SIZE];
@@ -106,11 +106,11 @@ pub fn decrypt_page(
 ) -> Result<([u8; PAGE_PLAINTEXT_SIZE], u64)> {
     let nonce: [u8; NONCE_SIZE] = frame[0..NONCE_SIZE]
         .try_into()
-        .map_err(|_| TosumError::Corrupt { pgno, reason: "bad nonce length" })?;
+        .map_err(|_| TosumuError::Corrupt { pgno, reason: "bad nonce length" })?;
     let page_version = u64::from_le_bytes(
         frame[PAGE_VERSION_OFFSET..PAGE_VERSION_OFFSET + PAGE_VERSION_SIZE]
             .try_into()
-            .map_err(|_| TosumError::Corrupt { pgno, reason: "bad page_version length" })?,
+            .map_err(|_| TosumuError::Corrupt { pgno, reason: "bad page_version length" })?,
     );
     let page_type = frame[PAGE_FRAME_TYPE_OFFSET];
     let aad = make_aad(pgno, page_version, page_type);
@@ -123,10 +123,10 @@ pub fn decrypt_page(
             nonce.as_slice().into(),
             Payload { msg: ciphertext_with_tag, aad: &aad },
         )
-        .map_err(|_| TosumError::AuthFailed { pgno: Some(pgno) })?;
+        .map_err(|_| TosumuError::AuthFailed { pgno: Some(pgno) })?;
 
     if plaintext.len() != PAGE_PLAINTEXT_SIZE {
-        return Err(TosumError::Corrupt { pgno, reason: "decrypted page has wrong length" });
+        return Err(TosumuError::Corrupt { pgno, reason: "decrypted page has wrong length" });
     }
     let mut out = [0u8; PAGE_PLAINTEXT_SIZE];
     out.copy_from_slice(&plaintext);
@@ -173,13 +173,13 @@ pub fn derive_passphrase_kek(
     };
 
     let params = Params::new(m, t, p, Some(32))
-        .map_err(|_| TosumError::InvalidArgument("invalid Argon2id parameters"))?;
+        .map_err(|_| TosumuError::InvalidArgument("invalid Argon2id parameters"))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut kek = [0u8; 32];
     argon2
         .hash_password_into(passphrase.as_bytes(), salt, &mut kek)
-        .map_err(|_| TosumError::InvalidArgument("Argon2id hashing failed"))?;
+        .map_err(|_| TosumuError::InvalidArgument("Argon2id hashing failed"))?;
     Ok(kek)
 }
 
@@ -220,7 +220,7 @@ pub fn wrap_dek(
     let cipher = ChaCha20Poly1305::new(kek.into());
     let ct = cipher
         .encrypt(nonce.as_slice().into(), Payload { msg: dek.as_slice(), aad: &aad })
-        .map_err(|_| TosumError::EncryptFailed)?;
+        .map_err(|_| TosumuError::EncryptFailed)?;
     debug_assert_eq!(ct.len(), 48);
     let mut wrapped = [0u8; 48];
     wrapped.copy_from_slice(&ct);
@@ -240,7 +240,7 @@ pub fn unwrap_dek(
     let cipher = ChaCha20Poly1305::new(kek.into());
     let pt = cipher
         .decrypt(nonce.as_slice().into(), Payload { msg: wrapped.as_slice(), aad: &aad })
-        .map_err(|_| TosumError::WrongKey)?;
+        .map_err(|_| TosumuError::WrongKey)?;
     debug_assert_eq!(pt.len(), 32);
     let mut dek = [0u8; 32];
     dek.copy_from_slice(&pt);
@@ -277,7 +277,7 @@ pub fn verify_kcv(kek: &[u8; 32], kcv: &[u8; 32]) -> Result<()> {
     let cipher = ChaCha20Poly1305::new(kek.into());
     cipher
         .decrypt(KCV_NONCE.as_slice().into(), Payload { msg: kcv.as_slice(), aad: KCV_AAD })
-        .map_err(|_| TosumError::WrongKey)?;
+        .map_err(|_| TosumuError::WrongKey)?;
     Ok(())
 }
 
@@ -320,7 +320,7 @@ pub fn verify_header_mac(
     let ks_end = KEYSLOT_REGION_OFFSET + keyslot_count * KEYSLOT_SIZE;
     mac.update(&page0[KEYSLOT_REGION_OFFSET..ks_end]);
     mac.verify_slice(expected_mac)
-        .map_err(|_| TosumError::AuthFailed { pgno: None })
+        .map_err(|_| TosumuError::AuthFailed { pgno: None })
 }
 
 // ── Recovery key (§8.6.2) ────────────────────────────────────────────────────
@@ -362,10 +362,10 @@ pub fn derive_recovery_kek(recovery_str: &str) -> Result<[u8; 32]> {
 
     let raw = BASE32_NOPAD
         .decode(clean.as_bytes())
-        .map_err(|_| TosumError::WrongKey)?;
+        .map_err(|_| TosumuError::WrongKey)?;
 
     if raw.len() != RECOVERY_SECRET_BYTES {
-        return Err(TosumError::WrongKey);
+        return Err(TosumuError::WrongKey);
     }
 
     let hk = Hkdf::<Sha256>::new(None, &raw);
@@ -487,7 +487,7 @@ mod tests {
         let dek = [0xCDu8; 32];
         let (nonce, wrapped) = wrap_dek(&kek, &dek, 0, 1, KEYSLOT_KIND_PASSPHRASE).unwrap();
         let err = unwrap_dek(&bad_kek, &nonce, &wrapped, 0, 1, KEYSLOT_KIND_PASSPHRASE).unwrap_err();
-        assert!(matches!(err, crate::error::TosumError::WrongKey));
+        assert!(matches!(err, crate::error::TosumuError::WrongKey));
     }
 
     #[test]
@@ -497,7 +497,7 @@ mod tests {
         let (nonce, wrapped) = wrap_dek(&kek, &dek, 0, 1, KEYSLOT_KIND_PASSPHRASE).unwrap();
         // Different slot_index changes the AAD → tag mismatch
         let err = unwrap_dek(&kek, &nonce, &wrapped, 1, 1, KEYSLOT_KIND_PASSPHRASE).unwrap_err();
-        assert!(matches!(err, crate::error::TosumError::WrongKey));
+        assert!(matches!(err, crate::error::TosumuError::WrongKey));
     }
 
     // ── KCV KAT ───────────────────────────────────────────────────────────────
@@ -515,7 +515,7 @@ mod tests {
         let bad_kek = [0x56u8; 32];
         let kcv = compute_kcv(&kek);
         let err = verify_kcv(&bad_kek, &kcv).unwrap_err();
-        assert!(matches!(err, crate::error::TosumError::WrongKey));
+        assert!(matches!(err, crate::error::TosumuError::WrongKey));
     }
 
     #[test]
@@ -550,7 +550,7 @@ mod tests {
         // Tamper one byte in the keyslot region
         page0[KEYSLOT_REGION_OFFSET + 5] ^= 0xFF;
         let err = verify_header_mac(&hmk, &page0, 1, &mac).unwrap_err();
-        assert!(matches!(err, crate::error::TosumError::AuthFailed { pgno: None }));
+        assert!(matches!(err, crate::error::TosumuError::AuthFailed { pgno: None }));
     }
 
     // ── Argon2id KAT ─────────────────────────────────────────────────────────
@@ -638,7 +638,7 @@ mod tests {
     fn kat_recovery_kek_bad_base32_returns_wrong_key() {
         assert!(matches!(
             derive_recovery_kek("not-valid-base32!!!"),
-            Err(crate::error::TosumError::WrongKey)
+            Err(crate::error::TosumuError::WrongKey)
         ));
     }
 }

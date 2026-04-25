@@ -13,7 +13,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use std::io::Write;
-use tosumu_core::error::TosumError;
+use tosumu_core::error::TosumuError;
 use tosumu_core::format::{
     PAGE_SIZE, MAGIC, OFF_MAGIC, OFF_FORMAT_VERSION, OFF_PAGE_SIZE,
     OFF_MIN_READER_VERSION, OFF_FLAGS, OFF_PAGE_COUNT, OFF_FREELIST_HEAD,
@@ -68,13 +68,13 @@ fuzz_target!(|data: &[u8]| {
     // Attempt to open — must not panic regardless of keyslot contents.
     let result = tosumu_core::pager::Pager::open(&path);
     match result {
-        Ok(_) | Err(TosumError::NotATosumFile)
-        | Err(TosumError::WrongKey)
-        | Err(TosumError::AuthFailed { .. })
-        | Err(TosumError::NewerFormat { .. })
-        | Err(TosumError::PageSizeMismatch { .. })
-        | Err(TosumError::Io(_))
-        | Err(TosumError::Corrupt { .. }) => {}
+        Ok(_) | Err(TosumuError::NotATosumFile)
+        | Err(TosumuError::WrongKey)
+        | Err(TosumuError::AuthFailed { .. })
+        | Err(TosumuError::NewerFormat { .. })
+        | Err(TosumuError::PageSizeMismatch { .. })
+        | Err(TosumuError::Io(_))
+        | Err(TosumuError::Corrupt { .. }) => {}
         Err(e) => panic!("unexpected error from Pager::open on fuzz keyslot: {e:?}"),
     }
 
@@ -99,14 +99,14 @@ fuzz_target!(|data: &[u8]| {
 
         let result = tosumu_core::pager::Pager::open_with_passphrase(&path, passphrase);
         match result {
-            Ok(_) | Err(TosumError::NotATosumFile)
-            | Err(TosumError::WrongKey)
-            | Err(TosumError::AuthFailed { .. })
-            | Err(TosumError::NewerFormat { .. })
-            | Err(TosumError::PageSizeMismatch { .. })
-            | Err(TosumError::Io(_))
-            | Err(TosumError::Corrupt { .. })
-            | Err(TosumError::InvalidArgument(_)) => {}
+            Ok(_) | Err(TosumuError::NotATosumFile)
+            | Err(TosumuError::WrongKey)
+            | Err(TosumuError::AuthFailed { .. })
+            | Err(TosumuError::NewerFormat { .. })
+            | Err(TosumuError::PageSizeMismatch { .. })
+            | Err(TosumuError::Io(_))
+            | Err(TosumuError::Corrupt { .. })
+            | Err(TosumuError::InvalidArgument(_)) => {}
             Err(e) => panic!("unexpected error from open_with_passphrase on fuzz keyslot: {e:?}"),
         }
 

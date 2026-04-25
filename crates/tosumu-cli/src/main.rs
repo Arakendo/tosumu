@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
-use tosumu_core::error::TosumError;
+use tosumu_core::error::TosumuError;
 use tosumu_core::page_store::PageStore;
 
 #[derive(Parser)]
@@ -116,10 +116,10 @@ fn main() {
 }
 
 /// Open a `PageStore`, automatically prompting for a passphrase if required.
-fn open_store(path: &Path) -> Result<PageStore, TosumError> {
+fn open_store(path: &Path) -> Result<PageStore, TosumuError> {
     match PageStore::open(path) {
         Ok(store) => Ok(store),
-        Err(TosumError::WrongKey) => {
+        Err(TosumuError::WrongKey) => {
             let pass = prompt_passphrase("passphrase: ")?;
             PageStore::open_with_passphrase(path, &pass)
         }
@@ -128,12 +128,12 @@ fn open_store(path: &Path) -> Result<PageStore, TosumError> {
 }
 
 /// Prompt for a passphrase without echoing.
-fn prompt_passphrase(prompt: &str) -> Result<String, TosumError> {
+fn prompt_passphrase(prompt: &str) -> Result<String, TosumuError> {
     rpassword::prompt_password(prompt)
-        .map_err(|e| TosumError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))
+        .map_err(|e| TosumuError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))
 }
 
-fn run(cli: Cli) -> Result<(), TosumError> {
+fn run(cli: Cli) -> Result<(), TosumuError> {
     match cli.command {
         Command::Init { path, encrypt } => {
             if encrypt {
@@ -415,7 +415,7 @@ fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Resu
                     std::process::exit(1);
                 }
             },
-            Err(tosumu_core::error::TosumError::WrongKey) => {
+            Err(tosumu_core::error::TosumuError::WrongKey) => {
                 if explain {
                     println!("  btree:       SKIP   — passphrase-protected DB (supply passphrase for btree check)");
                 }
@@ -448,10 +448,10 @@ fn cmd_backup(
     dest: &std::path::Path,
 ) -> tosumu_core::error::Result<()> {
     use tosumu_core::wal::wal_path;
-    use tosumu_core::error::TosumError;
+    use tosumu_core::error::TosumuError;
 
     std::fs::copy(src, dest)
-        .map_err(|e| TosumError::Io(e))?;
+        .map_err(|e| TosumuError::Io(e))?;
     println!("backed up {} → {}", src.display(), dest.display());
 
     // Copy WAL sidecar if it exists.
@@ -459,7 +459,7 @@ fn cmd_backup(
     if src_wal.exists() {
         let dest_wal = wal_path(dest);
         std::fs::copy(&src_wal, &dest_wal)
-            .map_err(|e| TosumError::Io(e))?;
+            .map_err(|e| TosumuError::Io(e))?;
         println!("backed up {} → {}", src_wal.display(), dest_wal.display());
     }
     Ok(())
