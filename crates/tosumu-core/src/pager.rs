@@ -497,7 +497,7 @@ impl Pager {
 
         f(&mut plaintext)?;
 
-        let new_frame = encrypt_page(&self.page_key, pgno, version + 1, plaintext[0], &plaintext)?;
+        let new_frame = encrypt_page(&self.page_key, pgno, version + 1, plaintext[PAGE_OFF_TYPE], &plaintext)?;
 
         if self.txn_active {
             // WAL path: buffer the frame, append PageWrite.
@@ -551,11 +551,11 @@ impl Pager {
         }
         let mut plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
         // Set page header: type, free_start, free_end.
-        plaintext[0] = page_type;
-        // flags=0, slot_count=0 (already 0)
-        write_u16_buf(&mut plaintext, 2, 0u16);               // slot_count
-        write_u16_buf(&mut plaintext, 4, PAGE_HEADER_SIZE as u16); // free_start
-        write_u16_buf(&mut plaintext, 6, PAGE_PLAINTEXT_SIZE as u16); // free_end
+        plaintext[PAGE_OFF_TYPE] = page_type;
+        // PAGE_OFF_FLAGS = 0 (already zero)
+        write_u16_buf(&mut plaintext, PAGE_OFF_SLOT_COUNT, 0u16);
+        write_u16_buf(&mut plaintext, PAGE_OFF_FREE_START, PAGE_HEADER_SIZE as u16);
+        write_u16_buf(&mut plaintext, PAGE_OFF_FREE_END, PAGE_PLAINTEXT_SIZE as u16);
         // fragmented_bytes=0, reserved=0, next_leaf=0 — already zero
         let frame = encrypt_page(&self.page_key, pgno, 1, page_type, &plaintext)?;
         self.write_frame(pgno, &frame)?;

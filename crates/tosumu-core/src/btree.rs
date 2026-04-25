@@ -38,11 +38,12 @@ use crate::error::{Result, TosumuError};
 use crate::format::*;
 use crate::pager::Pager;
 
-// Page header field offsets (within the decrypted page body).
-const HDR_PAGE_TYPE: usize = 0;
-const HDR_SLOT_COUNT: usize = 2;
-const HDR_FREE_START: usize = 4;
-const HDR_FREE_END: usize = 6;
+// Page header field offsets — canonical definitions are PAGE_OFF_* in format.rs.
+// Local aliases kept for readability within btree.rs.
+const HDR_PAGE_TYPE: usize = PAGE_OFF_TYPE;
+const HDR_SLOT_COUNT: usize = PAGE_OFF_SLOT_COUNT;
+const HDR_FREE_START: usize = PAGE_OFF_FREE_START;
+const HDR_FREE_END: usize = PAGE_OFF_FREE_END;
 /// Dual-purpose field at offset 14:
 /// • leaf pages:     pgno of next leaf in sorted order (0 = tail)
 /// • internal pages: pgno of leftmost child
