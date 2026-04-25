@@ -83,6 +83,40 @@
       cursor: grabbing;
     }
 
+    #tooltip {
+      position: absolute;
+      min-width: 190px;
+      max-width: 280px;
+      padding: 10px 12px;
+      border: 1px solid rgba(23, 50, 58, 0.12);
+      border-radius: 12px;
+      background: rgba(255, 250, 242, 0.97);
+      color: var(--ink);
+      box-shadow: 0 10px 24px rgba(23, 50, 58, 0.12);
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 120ms ease, transform 120ms ease;
+      z-index: 3;
+    }
+
+    #tooltip.is-visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    #tooltip .title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    #tooltip .line {
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+
     .link {
       fill: none;
       stroke: var(--link);
@@ -124,13 +158,15 @@
 <body>
   <div id="app">
     <div id="summary"></div>
-    <div id="caption">Tree topology from inspect-tree JSON. Click a node to sync the page field in the harness. Drag to pan and use the mouse wheel to zoom.</div>
+    <div id="caption">Tree topology from inspect-tree JSON. Click a node to sync the page field, double-click to inspect it, and hover for page details. Drag to pan and use the mouse wheel to zoom.</div>
     <div id="viewport"></div>
+    <div id="tooltip"></div>
   </div>
 
   <script>
     const summary = document.getElementById('summary');
     const viewport = document.getElementById('viewport');
+    const tooltip = document.getElementById('tooltip');
 
     function pickFill(node) {
       if (node.data.visualKind === 'root-focus') return '#1f5663';
@@ -146,17 +182,62 @@
         : '#17323a';
     }
 
-    function postPageSelection(pageNumber) {
+    function postHarnessMessage(type, pageNumber) {
       if (!pageNumber || !window.chrome || !window.chrome.webview) {
         return;
       }
 
-      window.chrome.webview.postMessage({ type: 'selectPage', pageNumber });
+      window.chrome.webview.postMessage({ type, pageNumber });
+    }
+
+    function postPageSelection(pageNumber) {
+      postHarnessMessage('selectPage', pageNumber);
+    }
+
+    function postPageInspect(pageNumber) {
+      postHarnessMessage('inspectPage', pageNumber);
+    }
+
+    function describeTooltip(data) {
+      const lines = [];
+      if (data.pageTypeName) lines.push(`type: ${data.pageTypeName}`);
+      if (data.relationLabel) lines.push(`relation: ${data.relationLabel}`);
+      if (typeof data.slotCount === 'number') lines.push(`slots: ${data.slotCount}`);
+      if (typeof data.pageVersion === 'number') lines.push(`version: ${data.pageVersion}`);
+      if (typeof data.childCount === 'number' && data.childCount > 0) lines.push(`children: ${data.childCount}`);
+      if (typeof data.nextLeaf === 'number') lines.push(`next leaf: ${data.nextLeaf}`);
+      if (data.separatorKeyHex) lines.push(`separator: ${data.separatorKeyHex}`);
+      return lines;
+    }
+
+    function showTooltip(event, data) {
+      const lines = describeTooltip(data);
+      if (!lines.length) {
+        tooltip.classList.remove('is-visible');
+        return;
+      }
+
+      tooltip.innerHTML = `<div class="title">${data.label}</div>${lines
+        .map(line => `<div class="line">${line}</div>`)
+        .join('')}`;
+
+      const viewportRect = viewport.getBoundingClientRect();
+      const offsetX = event.clientX - viewportRect.left + 16;
+      const offsetY = event.clientY - viewportRect.top + 16;
+
+      tooltip.style.left = `${Math.min(offsetX, viewportRect.width - 280)}px`;
+      tooltip.style.top = `${Math.min(offsetY, viewportRect.height - 120)}px`;
+      tooltip.classList.add('is-visible');
+    }
+
+    function hideTooltip() {
+      tooltip.classList.remove('is-visible');
     }
 
     window.renderTree = function renderTree(payload) {
       summary.innerHTML = '';
       viewport.innerHTML = '';
+      hideTooltip();
 
       const pills = [
         payload.rootPageNumber ? `root ${payload.rootPageNumber}` : 'root unknown',
@@ -216,7 +297,11 @@
         .join('g')
         .attr('class', data => data.data.pageNumber ? 'node node--page' : 'node')
         .attr('transform', data => `translate(${data.y},${data.x})`)
-        .on('click', (_, data) => postPageSelection(data.data.pageNumber));
+        .on('click', (_, data) => postPageSelection(data.data.pageNumber))
+        .on('dblclick', (_, data) => postPageInspect(data.data.pageNumber))
+        .on('mouseenter', (event, data) => showTooltip(event, data.data))
+        .on('mousemove', (event, data) => showTooltip(event, data.data))
+        .on('mouseleave', hideTooltip);
 
       node.append('rect')
         .attr('x', -2)

@@ -298,6 +298,8 @@ public sealed class TosumuCliTool
         {
             FileName = ExecutablePath,
             UseShellExecute = false,
+            CreateNoWindow = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = redirectStandardInput,

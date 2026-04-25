@@ -1208,12 +1208,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 DescribeTreeNode(rootPage, rootPage == treeFocusPageNumber ? treeFocusPageTypeName : null),
                 rootPage == treeFocusPageNumber ? "root-focus" : "root",
                 rootPage,
+                rootPage == treeFocusPageNumber ? treeFocusPageTypeName : null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                0,
                 [])
             : new TreeWebViewNode(
                 "Root pending",
                 "Load a header to discover the root page.",
                 "synthetic",
                 null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                0,
                 []);
 
         var observedNodes = treePageVisitStates
@@ -1223,6 +1237,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 $"{GetTreeRelationLabel(entry.PageNumber)} · {DescribeTreeNode(entry.PageNumber, entry.PageTypeName)}",
                 entry.PageNumber == treeFocusPageNumber ? "focus" : "visited",
                 entry.PageNumber,
+                entry.PageTypeName,
+                null,
+                null,
+                GetTreeRelationLabel(entry.PageNumber),
+                null,
+                null,
+                0,
                 []))
             .ToList();
 
@@ -1234,6 +1255,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 $"{observedNodes.Count} inspected page{(observedNodes.Count == 1 ? string.Empty : "s")}",
                 "synthetic",
                 null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                observedNodes.Count,
                 observedNodes));
         }
 
@@ -1246,6 +1274,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 "Observed root, focus, and inspected pages",
                 "synthetic",
                 null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                topLevelNodes.Count,
                 topLevelNodes));
     }
 
@@ -1264,6 +1299,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             meta,
             GetTreeVisualKind(node.Pgno, node.PageTypeName),
             node.Pgno,
+            node.PageTypeName,
+            node.PageVersion,
+            node.SlotCount,
+            relationLabel,
+            separatorKeyHex,
+            node.NextLeaf,
+            node.Children.Count,
             node.Children.Select(child => BuildTreeWebViewNode(
                 child.Child,
                 child.Relation,
@@ -1302,16 +1344,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             : pageNumber == treeRootPageNumber ? "Root" : "Visited";
     }
 
-    private void TreeWebView_OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    private async void TreeWebView_OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         try
         {
             using var document = JsonDocument.Parse(e.WebMessageAsJson);
             var root = document.RootElement;
-            if (!root.TryGetProperty("type", out var typeElement) || typeElement.GetString() != "selectPage")
+            if (!root.TryGetProperty("type", out var typeElement))
             {
                 return;
             }
+
+            var messageType = typeElement.GetString();
 
             if (!root.TryGetProperty("pageNumber", out var pageElement) || pageElement.ValueKind != JsonValueKind.Number)
             {
@@ -1323,9 +1367,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            PageNumberText = pageNumber.ToString();
-            StatusText = $"Selected page {pageNumber} from the D3 tree view. Inspect page to decode it.";
-            LogDebug($"Selected page {pageNumber} from the D3 tree view.");
+            switch (messageType)
+            {
+                case "selectPage":
+                    PageNumberText = pageNumber.ToString();
+                    StatusText = $"Selected page {pageNumber} from the D3 tree view. Double-click to inspect it immediately.";
+                    LogDebug($"Selected page {pageNumber} from the D3 tree view.");
+                    break;
+                case "inspectPage":
+                    LogDebug($"Inspect request for page {pageNumber} came from the D3 tree view.");
+                    await InspectSelectedPageFromRowAsync(pageNumber.ToString(), "D3 tree view");
+                    break;
+            }
         }
         catch (Exception ex)
         {
@@ -1784,4 +1837,11 @@ public sealed record TreeWebViewNode(
     string Meta,
     string VisualKind,
     ulong? PageNumber,
+    string? PageTypeName,
+    ulong? PageVersion,
+    ushort? SlotCount,
+    string? RelationLabel,
+    string? SeparatorKeyHex,
+    ulong? NextLeaf,
+    int ChildCount,
     IReadOnlyList<TreeWebViewNode> Children);
