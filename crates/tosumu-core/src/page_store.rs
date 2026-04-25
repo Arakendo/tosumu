@@ -12,6 +12,22 @@
 //
 // Slot entry: { offset: u16 LE, length: u16 LE } — 4 bytes per slot.
 // Offsets are relative to the start of the decrypted page body (0..PAGE_PLAINTEXT_SIZE).
+//
+// ── Read-path semantics ──────────────────────────────────────────────────────
+//
+// Scan / get correctness relies on two ordering invariants (see btree.rs):
+//
+//   1. Page-order = write-order: records are always appended; pages are
+//      always scanned in ascending pgno order.  A later write for the same
+//      key always lands on the same or a higher pgno.  Last-write-wins is
+//      therefore equivalent to last-pgno-wins.
+//
+//   2. Slot-order = write-order within a page: within a single leaf page,
+//      slots are appended; a later slot for the same key (live or tombstone)
+//      is always at a higher slot index.
+//
+// These invariants must be preserved if freelist reuse or compaction is
+// added in future stages — any violation makes get/scan silently incorrect.
 
 use std::path::Path;
 

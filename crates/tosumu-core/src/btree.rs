@@ -238,24 +238,40 @@ impl BTree {
     }
 
     /// Scan all pages in physical order (for debugging / verification).
+    ///
+    /// Correctness invariant: pages are iterated in allocation order (pgno 1,
+    /// 2, … page_count-1). Because records are always appended and never moved
+    /// between pages, later entries for the same key always appear at higher
+    /// pgnos.  The `BTreeMap` last-write-wins semantics therefore always
+    /// reflect the most recently written value — this is a required ordering
+    /// assumption.  If page reuse / compaction is added in future stages, this
+    /// scan must be revisited.
     pub fn scan_physical(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let mut map: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>> = Default::default();
         for pgno in 1..self.pager.page_count() {
             self.pager.with_page(pgno, |page| {
                 match page[HDR_PAGE_TYPE] {
                     PAGE_TYPE_LEAF => {}
-                    PAGE_TYPE_INTERNAL => return Ok(()),
+                    // Non-leaf pages carry no KV data; skip cleanly.
+                    // OVERFLOW and FREE are defined types (Stage 2+); treat
+                    // them the same as INTERNAL for forward-compatibility.
+                    PAGE_TYPE_INTERNAL | PAGE_TYPE_OVERFLOW | PAGE_TYPE_FREE => return Ok(()),
                     _ => return Err(TosumuError::Corrupt {
                         pgno,
                         reason: "unknown page type in physical scan",
                     }),
                 }
+                // Validate slot array bounds before reading any record data.
+                // After this returns Ok, every slot's off+len is within
+                // PAGE_PLAINTEXT_SIZE and the slot array itself doesn't
+                // overlap the heap — no further bounds checks needed below.
+                inv_check_slots(page, pgno)?;
                 let slot_count = read_u16(page, HDR_SLOT_COUNT) as usize;
                 for i in 0..slot_count {
                     let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
                     let off = read_u16(page, slot_pos) as usize;
                     let len = read_u16(page, slot_pos + 2) as usize;
-                    if off + len > PAGE_PLAINTEXT_SIZE { continue; }
+                    // Bounds already verified by inv_check_slots.
                     let rec = &page[off..off + len];
                     if rec.is_empty() { continue; }
                     match rec[0] {
