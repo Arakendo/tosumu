@@ -4677,3 +4677,143 @@ A verifier with access to the audit chain and witness receipts can reconstruct:
 This is the difference between an audit log that records events and one that records evidence. Tosumu's goal is the latter.
 
 ---
+
+## 30. Sync-shaped design (Stage 7+)
+
+Tosumu is not a sync engine in MVP. But all committed writes should be representable as durable semantic changes with stable identity, ordering, hashes, and watermarks so that future sync can be layered on without interpreting WAL.
+
+**Do not make sync read WAL. WAL is physical. Sync is semantic.** Every brave fool who merged them ended up building a distributed footgun keyed by page numbers.
+
+### 30.1 The core idea
+
+Every committed transaction should be able to produce a change fact:
+
+```
+change_id      — stable, ordered, globally unique
+db_id          — identifies the database instance
+actor_id       — identifies the device or user that made the write
+txn_id         — links all changes from the same transaction
+lsn            — physical ordering anchor (ties back to WAL, never exported)
+table_id       — which table
+row_key        — the primary key of the affected row
+operation      — insert | update | delete
+before_hash    — hash of the row before the change (None for insert)
+after_hash     — hash of the row after the change (None for delete)
+audit_head     — the audit chain head at commit time (from §23)
+```
+
+Then sync later becomes:
+
+```
+give me changes after watermark X
+apply changes I haven't seen
+detect conflicts when the same row was changed from different base versions
+```
+
+This is the same vocabulary Anvil needs for offline-first sync (§1.4) — tosumu doesn't invent a new sync protocol; it emits the facts that any sync protocol can consume.
+
+### 30.2 Stable row identity
+
+Keys must be sync-friendly. A row_id that is meaningful only within one database (an autoincrement integer) cannot be a sync fact. ULID works well for app-layer rows:
+
+- Monotonically ordered within a single device (avoids B+ tree hot-spots).
+- Globally unique across devices without coordination.
+- Human-debuggable (timestamp-prefixed, base32).
+- 128-bit: fits in a single B+ tree key with room to spare.
+
+Tosumu does not mandate ULID — the key is opaque bytes. But the ULID shape should be recommended in the API documentation as the default for rows that will ever sync.
+
+### 30.3 Change log as a first-class system table
+
+Three distinct logs with three distinct purposes. Do not merge them.
+
+| Log | Purpose | Consumers |
+|---|---|---|
+| WAL (`tosumu.wal`) | Crash recovery — physical redo | Pager on open |
+| Change log (`_tosumu_changes`) | Semantic replication — what changed and why | Sync layer, offline peers |
+| Audit log (`_tosumu_audit`) | Claim and provenance history | Witnesses, compliance |
+
+The change log is a system table in page 2 (reserved alongside the system catalog in page 1). It is append-only. Rows are never updated or compacted in the MVP sync implementation — a VACUUM-equivalent for the change log is a Stage 8+ concern.
+
+### 30.4 Watermarks
+
+Each peer tracks where it last saw another peer:
+
+```rust
+struct Watermark {
+    peer_id:         [u8; 16],   // identifies the remote database instance
+    last_change_id:  Ulid,       // last change_id received from that peer
+}
+```
+
+Watermarks are stored in `_tosumu_watermarks`, a system table. Sync asks:
+
+```
+SELECT * FROM _tosumu_changes WHERE change_id > ? ORDER BY change_id
+```
+
+No WAL offsets, no physical page numbers — pure semantic ordering.
+
+### 30.5 Conflict metadata
+
+A conflict is two different futures from the same base version:
+
+```
+peer A:  base_version V → change CA (actor A, change_id X)
+peer B:  base_version V → change CB (actor B, change_id Y)
+```
+
+Detection: when applying a remote change, if `before_hash` of the remote change != `after_hash` of the local version, that is a conflict. The system never silently picks a winner. It records:
+
+```rust
+enum ConflictResolution {
+    AcceptRemote,          // overwrite local with remote
+    AcceptLocal,           // reject remote, keep local
+    Merge(Vec<u8>),        // merged value supplied by application
+    Deferred,              // flag as conflicted, surface to user
+}
+```
+
+The resolution is itself a change fact appended to the change log, so the conflict and its resolution are auditable.
+
+### 30.6 Tombstones as sync facts
+
+Delete must produce a durable, replicable fact:
+
+```
+row X was deleted at change_id Y by actor Z
+```
+
+Not "row X is missing." Without explicit tombstones, offline peers resurrect deleted rows on their next sync by treating absence as "I haven't seen this yet." Tombstones must be retained for at least as long as the longest expected offline window of any peer — the application configures this retention window; tosumu enforces it.
+
+### 30.7 What sync carries beyond raw data
+
+Because tosumu already tracks integrity and audit context (§23, §29), a sync payload is not just the row value. It is:
+
+```
+row value
+change_id
+before_hash / after_hash
+audit_head at commit time
+```
+
+A receiving peer can verify:
+
+- The change is internally consistent (hashes match the value).
+- The audit head is part of a known chain (if witnesses are configured).
+- Whether to trust the freshness of this change (§29.2).
+
+A remote peer doesn't just receive data. It receives data plus the proof context needed to decide how much confidence to place in it. That is the tosumu-specific differentiator over raw row-based replication.
+
+### 30.8 What is *not* built in MVP sync
+
+- No sync protocol transport (HTTP, WebSocket, P2P — all application-supplied).
+- No automatic conflict resolution policy (application must choose).
+- No tombstone GC (Stage 8+).
+- No partial replication / row filtering.
+- No schema sync — both peers must have identical schema; schema migrations are coordinated out-of-band.
+- No vector clocks (Lamport watermarks are sufficient for the two-peer case; vector clocks are Stage 8+).
+
+### 30.9 Design principle
+
+> Tosumu is sync-shaped, not a sync engine. Every write leaves a breadcrumb. Future sync is a reader of those breadcrumbs, not an interpreter of physical storage.
