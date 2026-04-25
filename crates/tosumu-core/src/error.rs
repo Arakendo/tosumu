@@ -20,6 +20,9 @@ pub enum TosumError {
     #[error("page encryption failed")]
     EncryptFailed,
 
+    #[error("OS RNG unavailable — cannot generate key material")]
+    RngFailed,
+
     #[error("not a tosumu file: bad magic or header")]
     NotATosumFile,
 

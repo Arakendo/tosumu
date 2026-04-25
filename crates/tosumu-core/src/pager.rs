@@ -61,7 +61,7 @@ impl Pager {
             .create_new(true)
             .open(path)?;
 
-        let dek = generate_dek();
+        let dek = generate_dek()?;
         let (page_key, _header_mac_key, _audit_key) = derive_subkeys(&dek);
 
         // Build page 0 (plaintext file header + Sentinel keyslot).
@@ -136,12 +136,12 @@ impl Pager {
             .create_new(true)
             .open(path)?;
 
-        let dek = generate_dek();
+        let dek = generate_dek()?;
         let (page_key, header_mac_key, _audit_key) = derive_subkeys(&dek);
 
         // Random 16-byte salt for this slot.
         let mut salt = [0u8; 16];
-        getrandom::getrandom(&mut salt).expect("getrandom failed");
+        getrandom::getrandom(&mut salt).map_err(|_| TosumError::RngFailed)?;
 
         // Derive KEK from passphrase.
         let kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
@@ -150,7 +150,7 @@ impl Pager {
         // Generate a unique per-database DEK_ID so that a full-slot splice from a
         // different database fails AEAD unwrap even when the same passphrase is used.
         let mut dek_id_buf = [0u8; 8];
-        getrandom::getrandom(&mut dek_id_buf).expect("getrandom failed");
+        getrandom::getrandom(&mut dek_id_buf).map_err(|_| TosumError::RngFailed)?;
         let dek_id = u64::from_le_bytes(dek_id_buf) | 1; // ensure non-zero
 
         // Wrap the DEK.
@@ -286,7 +286,7 @@ impl Pager {
         let slot_idx = find_empty_slot(&page0, keyslot_count)?;
 
         let mut salt = [0u8; 16];
-        getrandom::getrandom(&mut salt).expect("getrandom failed");
+        getrandom::getrandom(&mut salt).map_err(|_| TosumError::RngFailed)?;
         let kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let kek = derive_passphrase_kek(new_passphrase, &salt, &kdf_params)?;
         let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
@@ -407,7 +407,7 @@ impl Pager {
 
         // Wrap under new passphrase with fresh salt.
         let mut new_salt = [0u8; 16];
-        getrandom::getrandom(&mut new_salt).expect("getrandom failed");
+        getrandom::getrandom(&mut new_salt).map_err(|_| TosumError::RngFailed)?;
         let new_kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let new_kek = derive_passphrase_kek(new_passphrase, &new_salt, &new_kdf_params)?;
         let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
@@ -497,7 +497,7 @@ impl Pager {
 
         f(&mut plaintext)?;
 
-        let new_frame = encrypt_page(&self.page_key, pgno, version + 1, &plaintext)?;
+        let new_frame = encrypt_page(&self.page_key, pgno, version + 1, plaintext[0], &plaintext)?;
 
         if self.txn_active {
             // WAL path: buffer the frame, append PageWrite.
@@ -557,7 +557,7 @@ impl Pager {
         write_u16_buf(&mut plaintext, 4, PAGE_HEADER_SIZE as u16); // free_start
         write_u16_buf(&mut plaintext, 6, PAGE_PLAINTEXT_SIZE as u16); // free_end
         // fragmented_bytes=0, reserved=0, next_leaf=0 — already zero
-        let frame = encrypt_page(&self.page_key, pgno, 1, &plaintext)?;
+        let frame = encrypt_page(&self.page_key, pgno, 1, page_type, &plaintext)?;
         self.write_frame(pgno, &frame)?;
         Ok(())
     }

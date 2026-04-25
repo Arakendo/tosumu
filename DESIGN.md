@@ -209,7 +209,9 @@ Everything after page 0 and the **keyslot region** uses the page frame in §5.3.
 ┌─────────────────────────────────────────┐
 │ nonce         (12 bytes, plaintext)     │
 │ page_version  (8 bytes,  plaintext)     │  ← monotonic per page; also bound as AAD
-│ ciphertext    (page_size - 12 - 8 - 16) │
+│ page_type     (1 byte,   plaintext)     │  ← bound as AAD; allows type-aware tooling
+│ reserved      (3 bytes,  zero)          │
+│ ciphertext    (page_size - 24 - 16)     │
 │ auth_tag      (16 bytes)                │
 └─────────────────────────────────────────┘
 ```
@@ -218,6 +220,7 @@ Everything after page 0 and the **keyslot region** uses the page frame in §5.3.
 - **AAD** = `page_number (u64 LE) || page_version (u64 LE) || page_type (u8)`.
 - Binding page number prevents an attacker from swapping ciphertext blobs between slots.
 - Binding page version prevents rollback of a **single** page to an older valid ciphertext.
+- Binding page_type prevents type-confusion attacks (substituting a leaf frame for an internal page).
 - Nonce strategy: **random 96-bit nonce per write**. With Poly1305's 2^32 safe-use limit per key, we're effectively unbounded for an engine at this scale; we still track a `page_version` for per-page rollback protection.
 
 > **Known limitation — consistent multi-page rollback.** Per-page `page_version` does *not* prevent an attacker from rolling back *several* pages to a mutually consistent earlier snapshot. Detecting that requires either a global LSN bound into every page's AAD, a Merkle root stored in the header, or a checkpoint-signed manifest. This is explicitly deferred. Stage 6 or later may introduce a global LSN in the AAD; it is a non-goal for Stages 1–5. Future-us: do not feel clever about `page_version` beyond what it actually does.

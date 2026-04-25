@@ -16,13 +16,19 @@ pub const MIN_READER_VERSION: u16 = 1;
 // ── Page frame layout (§5.3) ──────────────────────────────────────────────────
 
 pub const NONCE_SIZE: usize = 12;
-pub const PAGE_VERSION_OFFSET: usize = NONCE_SIZE;         // 12
+pub const PAGE_VERSION_OFFSET: usize = NONCE_SIZE;                     // 12
 pub const PAGE_VERSION_SIZE: usize = 8;
-pub const CIPHERTEXT_OFFSET: usize = NONCE_SIZE + PAGE_VERSION_SIZE; // 20
+/// Offset of the plaintext `page_type` byte in the frame header.
+pub const PAGE_FRAME_TYPE_OFFSET: usize = NONCE_SIZE + PAGE_VERSION_SIZE; // 20
+/// Reserved bytes after `page_type` (pad to 4-byte alignment before ciphertext).
+pub const PAGE_FRAME_RESERVED_SIZE: usize = 3;
+/// Offset where ciphertext (+ tag) begins.
+pub const CIPHERTEXT_OFFSET: usize =
+    NONCE_SIZE + PAGE_VERSION_SIZE + 1 + PAGE_FRAME_RESERVED_SIZE;    // 24
 pub const TAG_SIZE: usize = 16;
 /// Plaintext bytes available inside one page frame.
-pub const PAGE_PLAINTEXT_SIZE: usize = PAGE_SIZE - NONCE_SIZE - PAGE_VERSION_SIZE - TAG_SIZE;
-// 4096 - 12 - 8 - 16 = 4060
+pub const PAGE_PLAINTEXT_SIZE: usize = PAGE_SIZE - CIPHERTEXT_OFFSET - TAG_SIZE;
+// 4096 - 24 - 16 = 4056
 
 // ── Slotted page layout (§5.4) ────────────────────────────────────────────────
 
@@ -105,7 +111,7 @@ pub const MAX_KEYSLOTS: usize = 8;
 
 const _: () = assert!(PAGE_SIZE == 4096);
 const _: () = assert!(PAGE_SIZE.is_power_of_two());
-const _: () = assert!(PAGE_PLAINTEXT_SIZE == 4060);
+const _: () = assert!(PAGE_PLAINTEXT_SIZE == 4056);
 const _: () = assert!(FILE_HEADER_SIZE + KEYSLOT_SIZE <= PAGE_SIZE);
 const _: () = assert!(FILE_HEADER_SIZE + MAX_KEYSLOTS * KEYSLOT_SIZE <= PAGE_SIZE);
 const _: () = assert!(PAGE_HEADER_SIZE + SLOT_SIZE < PAGE_PLAINTEXT_SIZE);

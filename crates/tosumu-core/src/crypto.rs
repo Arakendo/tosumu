@@ -6,12 +6,8 @@
 //   DEK (32-byte OsRng) → HKDF-SHA256 → page_key, header_mac_key, audit_key
 //
 // Page frame (§5.3):
-//   [nonce 12][page_version 8][ciphertext ...][tag 16]
-//   AAD = pgno (u64 LE) || page_version (u64 LE)
-//
-// NOTE: page_type is not included in AAD for MVP+1. The design specifies it
-// but page_type lives inside the ciphertext, creating a chicken-and-egg issue.
-// Stage 6 may add a plaintext page_type field to the frame to resolve this.
+//   [nonce 12][page_version 8][page_type 1][reserved 3][ciphertext ...][tag 16]
+//   AAD = pgno (u64 LE) || page_version (u64 LE) || page_type (u8)
 
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use chacha20poly1305::aead::{Aead, Payload};
@@ -23,21 +19,22 @@ use crate::error::{Result, TosumError};
 use crate::format::{
     PAGE_SIZE, PAGE_PLAINTEXT_SIZE, NONCE_SIZE, TAG_SIZE,
     PAGE_VERSION_OFFSET, PAGE_VERSION_SIZE, CIPHERTEXT_OFFSET,
+    PAGE_FRAME_TYPE_OFFSET,
     FILE_HEADER_PLAIN_LEN, KEYSLOT_SIZE,
 };
 
 /// Generate a fresh 32-byte DEK from the OS random source.
-pub fn generate_dek() -> [u8; 32] {
+pub fn generate_dek() -> Result<[u8; 32]> {
     let mut dek = [0u8; 32];
-    getrandom::getrandom(&mut dek).expect("getrandom failed — OS RNG unavailable");
-    dek
+    getrandom::getrandom(&mut dek).map_err(|_| TosumError::RngFailed)?;
+    Ok(dek)
 }
 
 /// Generate a random 12-byte nonce for page encryption.
-pub fn random_nonce() -> [u8; 12] {
+pub fn random_nonce() -> Result<[u8; 12]> {
     let mut n = [0u8; 12];
-    getrandom::getrandom(&mut n).expect("getrandom failed — OS RNG unavailable");
-    n
+    getrandom::getrandom(&mut n).map_err(|_| TosumError::RngFailed)?;
+    Ok(n)
 }
 
 /// Derive the three HKDF subkeys from the DEK.
@@ -63,18 +60,21 @@ pub fn derive_subkeys(dek: &[u8; 32]) -> ([u8; 32], [u8; 32], [u8; 32]) {
 /// Encrypt `plaintext` (PAGE_PLAINTEXT_SIZE bytes) into a full PAGE_SIZE frame.
 ///
 /// Frame layout:
-///   [0..12]   nonce (random)
-///   [12..20]  page_version (LE u64)
-///   [20..4080] ciphertext
+///   [0..12]    nonce (random)
+///   [12..20]   page_version (LE u64)
+///   [20]       page_type (plaintext, bound as AAD)
+///   [21..24]   reserved (zero)
+///   [24..4080] ciphertext
 ///   [4080..4096] auth tag
 pub fn encrypt_page(
     page_key: &[u8; 32],
     pgno: u64,
     page_version: u64,
+    page_type: u8,
     plaintext: &[u8; PAGE_PLAINTEXT_SIZE],
 ) -> Result<[u8; PAGE_SIZE]> {
-    let nonce = random_nonce();
-    let aad = make_aad(pgno, page_version);
+    let nonce = random_nonce()?;
+    let aad = make_aad(pgno, page_version, page_type);
 
     let cipher = ChaCha20Poly1305::new(page_key.into());
     let ciphertext = cipher
@@ -84,13 +84,16 @@ pub fn encrypt_page(
         )
         .map_err(|_| TosumError::EncryptFailed)?;
 
-    // ciphertext from aead crate = plaintext_len + tag
-    debug_assert_eq!(ciphertext.len(), PAGE_PLAINTEXT_SIZE + TAG_SIZE);
+    if ciphertext.len() != PAGE_PLAINTEXT_SIZE + TAG_SIZE {
+        return Err(TosumError::EncryptFailed);
+    }
 
     let mut frame = [0u8; PAGE_SIZE];
     frame[0..NONCE_SIZE].copy_from_slice(&nonce);
     frame[PAGE_VERSION_OFFSET..PAGE_VERSION_OFFSET + PAGE_VERSION_SIZE]
         .copy_from_slice(&page_version.to_le_bytes());
+    frame[PAGE_FRAME_TYPE_OFFSET] = page_type;
+    // reserved bytes [21..24] remain zero
     frame[CIPHERTEXT_OFFSET..].copy_from_slice(&ciphertext);
     Ok(frame)
 }
@@ -101,13 +104,16 @@ pub fn decrypt_page(
     pgno: u64,
     frame: &[u8; PAGE_SIZE],
 ) -> Result<([u8; PAGE_PLAINTEXT_SIZE], u64)> {
-    let nonce: [u8; NONCE_SIZE] = frame[0..NONCE_SIZE].try_into().unwrap();
+    let nonce: [u8; NONCE_SIZE] = frame[0..NONCE_SIZE]
+        .try_into()
+        .map_err(|_| TosumError::Corrupt { pgno, reason: "bad nonce length" })?;
     let page_version = u64::from_le_bytes(
         frame[PAGE_VERSION_OFFSET..PAGE_VERSION_OFFSET + PAGE_VERSION_SIZE]
             .try_into()
-            .unwrap(),
+            .map_err(|_| TosumError::Corrupt { pgno, reason: "bad page_version length" })?,
     );
-    let aad = make_aad(pgno, page_version);
+    let page_type = frame[PAGE_FRAME_TYPE_OFFSET];
+    let aad = make_aad(pgno, page_version, page_type);
     // ciphertext_with_tag is everything after the plaintext header fields
     let ciphertext_with_tag = &frame[CIPHERTEXT_OFFSET..];
 
@@ -119,7 +125,9 @@ pub fn decrypt_page(
         )
         .map_err(|_| TosumError::AuthFailed { pgno: Some(pgno) })?;
 
-    debug_assert_eq!(plaintext.len(), PAGE_PLAINTEXT_SIZE);
+    if plaintext.len() != PAGE_PLAINTEXT_SIZE {
+        return Err(TosumError::Corrupt { pgno, reason: "decrypted page has wrong length" });
+    }
     let mut out = [0u8; PAGE_PLAINTEXT_SIZE];
     out.copy_from_slice(&plaintext);
     Ok((out, page_version))
@@ -127,10 +135,11 @@ pub fn decrypt_page(
 
 // ── private ───────────────────────────────────────────────────────────────────
 
-fn make_aad(pgno: u64, page_version: u64) -> [u8; 16] {
-    let mut aad = [0u8; 16];
+fn make_aad(pgno: u64, page_version: u64, page_type: u8) -> [u8; 17] {
+    let mut aad = [0u8; 17];
     aad[0..8].copy_from_slice(&pgno.to_le_bytes());
     aad[8..16].copy_from_slice(&page_version.to_le_bytes());
+    aad[16] = page_type;
     aad
 }
 
@@ -206,7 +215,7 @@ pub fn wrap_dek(
     dek_id: u64,
     kind: u8,
 ) -> Result<([u8; 12], [u8; 48])> {
-    let nonce = random_nonce();
+    let nonce = random_nonce()?;
     let aad = wrap_aad(slot_index, dek_id, kind);
     let cipher = ChaCha20Poly1305::new(kek.into());
     let ct = cipher
@@ -370,7 +379,7 @@ pub fn derive_recovery_kek(recovery_str: &str) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::{OFF_HEADER_MAC, KEYSLOT_REGION_OFFSET, KEYSLOT_KIND_PASSPHRASE};
+    use crate::format::{OFF_HEADER_MAC, KEYSLOT_REGION_OFFSET, KEYSLOT_KIND_PASSPHRASE, PAGE_VERSION_OFFSET};
 
     // ── HKDF KAT ─────────────────────────────────────────────────────────────
 
@@ -402,12 +411,13 @@ mod tests {
 
     #[test]
     fn kat_aead_roundtrip() {
+        use crate::format::PAGE_TYPE_LEAF;
         let dek = [0x11u8; 32];
         let (page_key, _, _) = derive_subkeys(&dek);
         let mut plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
         plaintext[0] = 0xDE;
         plaintext[1] = 0xAD;
-        let frame = encrypt_page(&page_key, 42, 7, &plaintext).unwrap();
+        let frame = encrypt_page(&page_key, 42, 7, PAGE_TYPE_LEAF, &plaintext).unwrap();
         let (pt2, version) = decrypt_page(&page_key, 42, &frame).unwrap();
         assert_eq!(pt2, plaintext);
         assert_eq!(version, 7);
@@ -415,12 +425,48 @@ mod tests {
 
     #[test]
     fn kat_aead_wrong_pgno_rejected() {
+        use crate::format::PAGE_TYPE_LEAF;
         let dek = [0x22u8; 32];
         let (page_key, _, _) = derive_subkeys(&dek);
         let plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
-        let frame = encrypt_page(&page_key, 1, 0, &plaintext).unwrap();
+        let frame = encrypt_page(&page_key, 1, 0, PAGE_TYPE_LEAF, &plaintext).unwrap();
         // Decrypting with a different pgno must fail (AAD mismatch).
         assert!(decrypt_page(&page_key, 2, &frame).is_err());
+    }
+
+    #[test]
+    fn kat_aead_tampered_nonce_rejected() {
+        use crate::format::PAGE_TYPE_LEAF;
+        let dek = [0x33u8; 32];
+        let (page_key, _, _) = derive_subkeys(&dek);
+        let plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
+        let mut frame = encrypt_page(&page_key, 1, 0, PAGE_TYPE_LEAF, &plaintext).unwrap();
+        frame[0] ^= 0xFF; // flip first nonce byte
+        assert!(decrypt_page(&page_key, 1, &frame).is_err());
+    }
+
+    #[test]
+    fn kat_aead_tampered_page_version_rejected() {
+        use crate::format::PAGE_TYPE_LEAF;
+        let dek = [0x44u8; 32];
+        let (page_key, _, _) = derive_subkeys(&dek);
+        let plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
+        let mut frame = encrypt_page(&page_key, 1, 5, PAGE_TYPE_LEAF, &plaintext).unwrap();
+        // Flip a bit in the page_version field — AAD mismatch must cause auth failure.
+        frame[PAGE_VERSION_OFFSET] ^= 0x01;
+        assert!(decrypt_page(&page_key, 1, &frame).is_err());
+    }
+
+    #[test]
+    fn kat_aead_tampered_page_type_rejected() {
+        use crate::format::{PAGE_TYPE_LEAF, PAGE_TYPE_INTERNAL, PAGE_FRAME_TYPE_OFFSET};
+        let dek = [0x55u8; 32];
+        let (page_key, _, _) = derive_subkeys(&dek);
+        let plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
+        let mut frame = encrypt_page(&page_key, 1, 0, PAGE_TYPE_LEAF, &plaintext).unwrap();
+        // Change the plaintext page_type byte in the frame header — AAD mismatch.
+        frame[PAGE_FRAME_TYPE_OFFSET] = PAGE_TYPE_INTERNAL;
+        assert!(decrypt_page(&page_key, 1, &frame).is_err());
     }
 
     // ── DEK wrap / unwrap KAT ─────────────────────────────────────────────────
