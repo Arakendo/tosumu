@@ -134,7 +134,7 @@ impl BTree {
     /// Look up `key`. Returns `Some(value)` if found and live, `None` otherwise.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let leaf_pgno = self.find_leaf(key)?;
-        self.pager.with_page(leaf_pgno, |page| Ok(leaf_get(page, key)))
+        self.pager.with_page(leaf_pgno, |page| leaf_get(page, leaf_pgno, key))
     }
 
     /// Insert or update `key` → `value`.
@@ -163,7 +163,7 @@ impl BTree {
 
         // Check the key is actually present.
         let exists = self.pager.with_page(leaf_pgno, |page| {
-            Ok(leaf_get(page, key).is_some())
+            Ok(leaf_get(page, leaf_pgno, key)?.is_some())
         })?;
         if !exists {
             return Ok(());
@@ -202,58 +202,30 @@ impl BTree {
     /// key on the current page, so those pages cannot contain in-range keys.
     pub fn scan_by_key(&self, start: &[u8], end: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let first_leaf = self.find_leaf(start)?;
-        let mut map: std::collections::BTreeMap<Vec<u8>, Option<Vec<u8>>> = Default::default();
+        let mut results: std::collections::BTreeMap<Vec<u8>, Vec<u8>> = Default::default();
         let mut cursor = first_leaf;
 
         loop {
-            // Returns (next_pgno, past_end).
-            // past_end = true when any key on this page exceeded `end`, meaning
-            // the next page in the chain is entirely beyond the range.
-            let (next, past_end) = self.pager.with_page(cursor, |page| {
-                let next_pgno = read_u64(page, HDR_LEFTMOST);
-                let slot_count = read_u16(page, HDR_SLOT_COUNT) as usize;
-                let mut past_end = false;
-                for i in 0..slot_count {
-                    let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
-                    let off = read_u16(page, slot_pos) as usize;
-                    let len = read_u16(page, slot_pos + 2) as usize;
-                    if off + len > PAGE_PLAINTEXT_SIZE { continue; }
-                    let rec = &page[off..off + len];
-                    if rec.is_empty() { continue; }
-                    match rec[0] {
-                        RECORD_LIVE if rec.len() >= 5 => {
-                            let kl = u16::from_le_bytes([rec[1], rec[2]]) as usize;
-                            let vl = u16::from_le_bytes([rec[3], rec[4]]) as usize;
-                            if 5 + kl + vl == rec.len() {
-                                let k = &rec[5..5 + kl];
-                                if k > end {
-                                    past_end = true;
-                                } else if k >= start {
-                                    map.insert(k.to_vec(), Some(rec[5 + kl..5 + kl + vl].to_vec()));
-                                }
-                            }
-                        }
-                        RECORD_TOMBSTONE if rec.len() >= 3 => {
-                            let kl = u16::from_le_bytes([rec[1], rec[2]]) as usize;
-                            if 3 + kl == rec.len() {
-                                let k = &rec[3..3 + kl];
-                                if k > end {
-                                    past_end = true;
-                                } else if k >= start {
-                                    map.insert(k.to_vec(), None);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                Ok((next_pgno, past_end))
+            let (pairs, next) = self.pager.with_page(cursor, |page| {
+                Ok((leaf_read_all_live(page), read_u64(page, HDR_LEFTMOST)))
             })?;
+            // pairs is sorted by key (BTreeMap iteration order from leaf_read_all_live).
+            // Insert in-range entries; stop scanning at the first key beyond `end`.
+            let mut past_end = false;
+            for (k, v) in pairs {
+                if k.as_slice() > end {
+                    past_end = true;
+                    break;
+                }
+                if k.as_slice() >= start {
+                    results.insert(k, v);
+                }
+            }
             if next == 0 || past_end { break; }
             cursor = next;
         }
 
-        Ok(map.into_iter().filter_map(|(k, v)| v.map(|val| (k, val))).collect())
+        Ok(results.into_iter().collect())
     }
 
     /// Scan all pages in physical order (for debugging / verification).
@@ -813,8 +785,10 @@ fn internal_slot_insert_sorted(page: &mut [u8; PAGE_PLAINTEXT_SIZE], sep_key: &[
 
 // ── Leaf page helpers ─────────────────────────────────────────────────────────
 
-/// Return the most recent live value for `key` in a leaf page, or `None`.
-fn leaf_get(page: &[u8; PAGE_PLAINTEXT_SIZE], key: &[u8]) -> Option<Vec<u8>> {
+/// Return the most recent live value for `key` in a leaf page, or `Ok(None)` if absent.
+///
+/// Returns `Err(Corrupt)` if any slot has an out-of-bounds offset or length.
+fn leaf_get(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, key: &[u8]) -> Result<Option<Vec<u8>>> {
     let slot_count = read_u16(page, HDR_SLOT_COUNT) as usize;
     let mut result: Option<Option<Vec<u8>>> = None;
 
@@ -822,7 +796,9 @@ fn leaf_get(page: &[u8; PAGE_PLAINTEXT_SIZE], key: &[u8]) -> Option<Vec<u8>> {
         let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
         let off = read_u16(page, slot_pos) as usize;
         let len = read_u16(page, slot_pos + 2) as usize;
-        if off + len > PAGE_PLAINTEXT_SIZE { continue; }
+        if off + len > PAGE_PLAINTEXT_SIZE {
+            return Err(TosumuError::Corrupt { pgno, reason: "leaf slot out of bounds" });
+        }
         let rec = &page[off..off + len];
         if rec.is_empty() { continue; }
         match rec[0] {
@@ -842,7 +818,7 @@ fn leaf_get(page: &[u8; PAGE_PLAINTEXT_SIZE], key: &[u8]) -> Option<Vec<u8>> {
             _ => {}
         }
     }
-    result.flatten()
+    Ok(result.flatten())
 }
 
 /// Read all live (key, value) pairs from a leaf, applying last-write-wins semantics.
