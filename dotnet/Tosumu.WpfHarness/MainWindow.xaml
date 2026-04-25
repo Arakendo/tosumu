@@ -53,6 +53,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
@@ -63,7 +64,7 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0"
-                           Grid.ColumnSpan="5"
+                           Grid.ColumnSpan="6"
                            Margin="0,0,0,10"
                            FontSize="13"
                            Foreground="{StaticResource MutedTextBrush}"
@@ -112,8 +113,16 @@
                     Click="InspectProtectorsButton_OnClick"
                     Content="Protectors" />
 
+                <Button x:Name="RefreshAllButton"
+                    Grid.Row="1"
+                    Grid.Column="5"
+                    Margin="12,0,0,0"
+                    Padding="16,10"
+                    Click="RefreshAllButton_OnClick"
+                    Content="Refresh All" />
+
                 <Grid Grid.Row="2"
-                      Grid.ColumnSpan="5"
+                      Grid.ColumnSpan="6"
                       Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -179,7 +188,7 @@
                 </Grid>
 
                 <Grid Grid.Row="3"
-                        Grid.ColumnSpan="5"
+                        Grid.ColumnSpan="6"
                       Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -220,7 +229,7 @@
                 </Grid>
 
                 <Grid Grid.Row="4"
-                        Grid.ColumnSpan="5"
+                        Grid.ColumnSpan="6"
                       Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />

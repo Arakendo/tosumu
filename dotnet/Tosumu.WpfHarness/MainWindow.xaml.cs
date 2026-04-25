@@ -102,22 +102,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             StatusText = "Loading header...";
             AddRecentDatabasePath(path);
-            var header = await GetCli().GetHeaderAsync(path);
-
-            HeaderRows.Clear();
-            HeaderRows.Add(new HeaderFieldRow("Format version", header.FormatVersion.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Page size", header.PageSize.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Min reader version", header.MinReaderVersion.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Flags", $"0x{header.Flags:X4}"));
-            HeaderRows.Add(new HeaderFieldRow("Page count", header.PageCount.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Freelist head", header.FreelistHead.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Root page", header.RootPage.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("WAL checkpoint LSN", header.WalCheckpointLsn.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("DEK id", header.DekId.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Keyslot count", header.KeyslotCount.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Keyslot region pages", header.KeyslotRegionPages.ToString()));
-            HeaderRows.Add(new HeaderFieldRow("Slot 0 kind", $"{header.Slot0.Kind} ({header.Slot0.KindByte})"));
-            HeaderRows.Add(new HeaderFieldRow("Slot 0 version", header.Slot0.Version.ToString()));
+            await LoadHeaderAsync(path);
 
             StatusText = $"Loaded header for {System.IO.Path.GetFileName(path)}.";
         });
@@ -139,38 +124,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             StatusText = "Running verification...";
             AddRecentDatabasePath(path);
-            var verify = await GetCli().GetVerifyAsync(path, unlock);
-
-            VerifySummaryText =
-                $"Pages checked: {verify.PagesChecked}\n" +
-                $"Pages ok: {verify.PagesOk}\n" +
-                $"Issue count: {verify.IssueCount}\n" +
-                $"B-tree checked: {verify.Btree.Checked}\n" +
-                $"B-tree ok: {verify.Btree.Ok}\n" +
-                $"B-tree message: {verify.Btree.Message ?? "(none)"}";
-
-            VerifyIssues.Clear();
-            if (verify.Issues.Count == 0)
-            {
-                VerifyIssues.Add(new VerifyIssueRow("-", "No issues reported."));
-            }
-            else
-            {
-                foreach (var issue in verify.Issues)
-                {
-                    VerifyIssues.Add(new VerifyIssueRow(issue.Pgno.ToString(), issue.Description));
-                }
-            }
-
-            PageResults.Clear();
-            foreach (var result in verify.PageResults)
-            {
-                PageResults.Add(new PageVerifyRow(
-                    result.Pgno.ToString(),
-                    result.AuthOk ? "ok" : "fail",
-                    result.PageVersion?.ToString() ?? "-",
-                    string.IsNullOrWhiteSpace(result.Issue) ? "-" : result.Issue));
-            }
+            await LoadVerifyAsync(path, unlock);
 
             StatusText = $"Verification finished for {System.IO.Path.GetFileName(path)}.";
         });
@@ -192,36 +146,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             StatusText = $"Inspecting page {pageNumber}...";
             AddRecentDatabasePath(path);
-            var page = await GetCli().GetPageAsync(path, pageNumber, unlock);
+            await LoadPageAsync(path, pageNumber, unlock);
 
-            PageSummaryText =
-                $"Page {page.Pgno} · {page.PageTypeName} (0x{page.PageType:X2})\n" +
-                $"Version: {page.PageVersion} · Slots: {page.SlotCount}\n" +
-                $"Free start: {page.FreeStart} · Free end: {page.FreeEnd} · Free bytes: {Math.Max(0, page.FreeEnd - page.FreeStart)}";
-
-            PageRecords.Clear();
-            if (page.Records.Count == 0)
-            {
-                PageRecords.Add(new PageRecordRow("-", "-", "-", "No decoded records on this page.", "-", "-", "-"));
-            }
-            else
-            {
-                foreach (var record in page.Records)
-                {
-                    var keyPreview = FormatAsciiPreview(record.KeyHex);
-                    var valuePreview = FormatAsciiPreview(record.ValueHex);
-                    PageRecords.Add(new PageRecordRow(
-                        record.Kind,
-                        record.Slot?.ToString() ?? "-",
-                        record.RecordType is null ? "-" : $"0x{record.RecordType:X2}",
-                        keyPreview,
-                        record.KeyHex ?? "-",
-                        valuePreview,
-                        record.ValueHex ?? "-"));
-                }
-            }
-
-            StatusText = $"Loaded page {page.Pgno} from {System.IO.Path.GetFileName(path)}.";
+            StatusText = $"Loaded page {pageNumber} from {System.IO.Path.GetFileName(path)}.";
         });
     }
 
@@ -236,22 +163,44 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             StatusText = "Loading protectors...";
             AddRecentDatabasePath(path);
-            var protectors = await GetCli().GetProtectorsAsync(path);
+            await LoadProtectorsAsync(path);
 
-            ProtectorSlots.Clear();
-            if (protectors.Slots.Count == 0)
+            StatusText = $"Loaded protectors for {System.IO.Path.GetFileName(path)}.";
+        });
+    }
+
+    private async void RefreshAllButton_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetValidDatabasePath(out var path))
+        {
+            return;
+        }
+
+        if (!TryGetUnlockSelection("refresh inspect data", out var unlockSelection))
+        {
+            return;
+        }
+
+        var hasPageNumber = ulong.TryParse(PageNumberText.Trim(), out var pageNumber);
+
+        await RunUnlockableInspectActionAsync(unlockSelection, async unlock =>
+        {
+            StatusText = "Refreshing header, verify, protectors, and page...";
+            AddRecentDatabasePath(path);
+
+            await LoadHeaderAsync(path);
+            await LoadProtectorsAsync(path);
+            await LoadVerifyAsync(path, unlock);
+
+            if (hasPageNumber)
             {
-                ProtectorSlots.Add(new ProtectorSlotRow("-", "No protectors reported.", "-"));
+                await LoadPageAsync(path, pageNumber, unlock);
+                StatusText = $"Refreshed all views for {System.IO.Path.GetFileName(path)}.";
             }
             else
             {
-                foreach (var slot in protectors.Slots)
-                {
-                    ProtectorSlots.Add(new ProtectorSlotRow(slot.Slot.ToString(), slot.Kind, slot.KindByte.ToString()));
-                }
+                StatusText = $"Refreshed header, verify, and protectors for {System.IO.Path.GetFileName(path)}. Page refresh skipped because the page number is invalid.";
             }
-
-            StatusText = $"Loaded protectors for {System.IO.Path.GetFileName(path)}.";
         });
     }
 
@@ -357,6 +306,112 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         cli ??= new TosumuCliTool();
         ExecutableStateText = cli.ExecutablePath;
         return cli;
+    }
+
+    private async Task LoadHeaderAsync(string path)
+    {
+        var header = await GetCli().GetHeaderAsync(path);
+
+        HeaderRows.Clear();
+        HeaderRows.Add(new HeaderFieldRow("Format version", header.FormatVersion.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Page size", header.PageSize.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Min reader version", header.MinReaderVersion.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Flags", $"0x{header.Flags:X4}"));
+        HeaderRows.Add(new HeaderFieldRow("Page count", header.PageCount.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Freelist head", header.FreelistHead.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Root page", header.RootPage.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("WAL checkpoint LSN", header.WalCheckpointLsn.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("DEK id", header.DekId.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Keyslot count", header.KeyslotCount.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Keyslot region pages", header.KeyslotRegionPages.ToString()));
+        HeaderRows.Add(new HeaderFieldRow("Slot 0 kind", $"{header.Slot0.Kind} ({header.Slot0.KindByte})"));
+        HeaderRows.Add(new HeaderFieldRow("Slot 0 version", header.Slot0.Version.ToString()));
+    }
+
+    private async Task LoadVerifyAsync(string path, TosumuInspectUnlockOptions? unlock)
+    {
+        var verify = await GetCli().GetVerifyAsync(path, unlock);
+
+        VerifySummaryText =
+            $"Pages checked: {verify.PagesChecked}\n" +
+            $"Pages ok: {verify.PagesOk}\n" +
+            $"Issue count: {verify.IssueCount}\n" +
+            $"B-tree checked: {verify.Btree.Checked}\n" +
+            $"B-tree ok: {verify.Btree.Ok}\n" +
+            $"B-tree message: {verify.Btree.Message ?? "(none)"}";
+
+        VerifyIssues.Clear();
+        if (verify.Issues.Count == 0)
+        {
+            VerifyIssues.Add(new VerifyIssueRow("-", "No issues reported."));
+        }
+        else
+        {
+            foreach (var issue in verify.Issues)
+            {
+                VerifyIssues.Add(new VerifyIssueRow(issue.Pgno.ToString(), issue.Description));
+            }
+        }
+
+        PageResults.Clear();
+        foreach (var result in verify.PageResults)
+        {
+            PageResults.Add(new PageVerifyRow(
+                result.Pgno.ToString(),
+                result.AuthOk ? "ok" : "fail",
+                result.PageVersion?.ToString() ?? "-",
+                string.IsNullOrWhiteSpace(result.Issue) ? "-" : result.Issue));
+        }
+    }
+
+    private async Task LoadPageAsync(string path, ulong pageNumber, TosumuInspectUnlockOptions? unlock)
+    {
+        var page = await GetCli().GetPageAsync(path, pageNumber, unlock);
+
+        PageSummaryText =
+            $"Page {page.Pgno} · {page.PageTypeName} (0x{page.PageType:X2})\n" +
+            $"Version: {page.PageVersion} · Slots: {page.SlotCount}\n" +
+            $"Free start: {page.FreeStart} · Free end: {page.FreeEnd} · Free bytes: {Math.Max(0, page.FreeEnd - page.FreeStart)}";
+
+        PageRecords.Clear();
+        if (page.Records.Count == 0)
+        {
+            PageRecords.Add(new PageRecordRow("-", "-", "-", "No decoded records on this page.", "-", "-", "-"));
+        }
+        else
+        {
+            foreach (var record in page.Records)
+            {
+                var keyPreview = FormatAsciiPreview(record.KeyHex);
+                var valuePreview = FormatAsciiPreview(record.ValueHex);
+                PageRecords.Add(new PageRecordRow(
+                    record.Kind,
+                    record.Slot?.ToString() ?? "-",
+                    record.RecordType is null ? "-" : $"0x{record.RecordType:X2}",
+                    keyPreview,
+                    record.KeyHex ?? "-",
+                    valuePreview,
+                    record.ValueHex ?? "-"));
+            }
+        }
+    }
+
+    private async Task LoadProtectorsAsync(string path)
+    {
+        var protectors = await GetCli().GetProtectorsAsync(path);
+
+        ProtectorSlots.Clear();
+        if (protectors.Slots.Count == 0)
+        {
+            ProtectorSlots.Add(new ProtectorSlotRow("-", "No protectors reported.", "-"));
+        }
+        else
+        {
+            foreach (var slot in protectors.Slots)
+            {
+                ProtectorSlots.Add(new ProtectorSlotRow(slot.Slot.ToString(), slot.Kind, slot.KindByte.ToString()));
+            }
+        }
     }
 
     private bool TryGetValidDatabasePath(out string path)
@@ -490,6 +545,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         BrowseButton.IsEnabled = !isBusy;
         BrowseKeyfileButton.IsEnabled = !isBusy;
         InspectProtectorsButton.IsEnabled = !isBusy;
+        RefreshAllButton.IsEnabled = !isBusy;
         InspectPageButton.IsEnabled = !isBusy;
         LoadHeaderButton.IsEnabled = !isBusy;
         VerifyButton.IsEnabled = !isBusy;

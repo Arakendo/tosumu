@@ -11,7 +11,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Tosumu.Cli" Version="0.0.0-local.5" />
+    <PackageReference Include="Tosumu.Cli" Version="0.0.0-local.6" />
   </ItemGroup>
 
 </Project>

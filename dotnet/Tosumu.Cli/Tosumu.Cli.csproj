@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <IsPackable>true</IsPackable>
     <PackageId>Tosumu.Cli</PackageId>
-    <Version>0.0.0-local.5</Version>
+    <Version>0.0.0-local.6</Version>
     <Authors>Arakendo</Authors>
     <Description>Thin .NET wrapper around the packaged tosumu CLI executable.</Description>
     <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
