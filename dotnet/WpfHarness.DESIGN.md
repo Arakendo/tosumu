@@ -23,6 +23,12 @@ Instead, this harness should be treated as one of these two things:
 
 This document assumes option 1 unless we explicitly revise `DESIGN.md`.
 
+Implementation note:
+
+- the first bootstrap project now exists at `dotnet/Tosumu.WpfHarness`
+- it currently targets `net10.0-windows`, because the packaged `Tosumu.Cli` wrapper currently targets `net10.0`
+- if the wrapper later retargets to `net8.0`, the harness can follow without changing the UI contract
+
 ## Goals
 
 - Reuse the existing `dotnet/Tosumu.Cli` package and local packaging flow.
@@ -168,6 +174,11 @@ Rationale:
 - the reusable `ClassLibrary` components already target `net8.0-windows`
 - `net8` is sufficient for a Windows harness
 - matching the existing local library baseline reduces integration friction
+
+Current implementation note:
+
+- the bootstrap harness is presently on `net10.0-windows` because `Tosumu.Cli` is currently packaged for `net10.0`
+- that is a packaging-alignment choice, not a UI architecture requirement
 
 ### Viewer Surface
 

@@ -4,7 +4,7 @@
 //! See DESIGN.md §12.0 (MVP +8).
 
 use std::path::{Path, PathBuf};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand};
 use serde::Serialize;
 use tosumu_core::error::TosumuError;
 use tosumu_core::pager::Pager;
@@ -16,6 +16,27 @@ enum UnlockSecret {
     Passphrase(String),
     RecoveryKey(String),
     Keyfile(PathBuf),
+}
+
+#[derive(Args, Clone, Default)]
+#[command(group(
+    ArgGroup::new("inspect_unlock")
+        .args(["stdin_passphrase", "stdin_recovery_key", "keyfile"])
+        .multiple(false)
+))]
+struct InspectUnlockArgs {
+    /// Do not fall back to interactive prompts if unlock is required.
+    #[arg(long)]
+    no_prompt: bool,
+    /// Read a passphrase from stdin for this inspect command.
+    #[arg(long)]
+    stdin_passphrase: bool,
+    /// Read a recovery key from stdin for this inspect command.
+    #[arg(long)]
+    stdin_recovery_key: bool,
+    /// Use a raw 32-byte keyfile for this inspect command.
+    #[arg(long)]
+    keyfile: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -141,6 +162,8 @@ enum InspectAction {
         /// Emit a structured JSON envelope.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        unlock: InspectUnlockArgs,
     },
     /// Inspect a single decoded page.
     Page {
@@ -151,6 +174,8 @@ enum InspectAction {
         /// Emit a structured JSON envelope.
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        unlock: InspectUnlockArgs,
     },
 }
 
@@ -371,6 +396,65 @@ fn open_btree_with_unlock(path: &Path, unlock: Option<&UnlockSecret>) -> Result<
     }
 }
 
+fn read_secret_from_stdin(empty_message: &'static str) -> Result<String, TosumuError> {
+    use std::io::Read as _;
+
+    let mut input = String::new();
+    std::io::stdin().read_to_string(&mut input).map_err(TosumuError::Io)?;
+    let secret = input.trim_end_matches(&['\r', '\n'][..]).to_string();
+    if secret.is_empty() {
+        return Err(TosumuError::InvalidArgument(empty_message));
+    }
+    Ok(secret)
+}
+
+fn resolve_inspect_unlock(unlock: InspectUnlockArgs) -> Result<(Option<UnlockSecret>, bool), TosumuError> {
+    let no_prompt = unlock.no_prompt;
+
+    if unlock.stdin_passphrase {
+        return Ok((Some(UnlockSecret::Passphrase(read_secret_from_stdin(
+            "stdin passphrase must not be empty",
+        )?)), no_prompt));
+    }
+
+    if unlock.stdin_recovery_key {
+        return Ok((Some(UnlockSecret::RecoveryKey(read_secret_from_stdin(
+            "stdin recovery key must not be empty",
+        )?)), no_prompt));
+    }
+
+    if let Some(keyfile) = unlock.keyfile {
+        return Ok((Some(UnlockSecret::Keyfile(keyfile)), no_prompt));
+    }
+
+    Ok((None, no_prompt))
+}
+
+fn open_pager_with_unlock(path: &Path, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<(Pager, Option<UnlockSecret>), TosumuError> {
+    match unlock {
+        None => {
+            if no_prompt {
+                let pager = Pager::open_readonly(path)?;
+                Ok((pager, None))
+            } else {
+                open_pager(path)
+            }
+        }
+        Some(UnlockSecret::Passphrase(pass)) => {
+            let pager = Pager::open_with_passphrase_readonly(path, &pass)?;
+            Ok((pager, Some(UnlockSecret::Passphrase(pass))))
+        }
+        Some(UnlockSecret::RecoveryKey(recovery)) => {
+            let pager = Pager::open_with_recovery_key_readonly(path, &recovery)?;
+            Ok((pager, Some(UnlockSecret::RecoveryKey(recovery))))
+        }
+        Some(UnlockSecret::Keyfile(keyfile)) => {
+            let pager = Pager::open_with_keyfile_readonly(path, &keyfile)?;
+            Ok((pager, Some(UnlockSecret::Keyfile(keyfile))))
+        }
+    }
+}
+
 /// Prompt for a passphrase without echoing.
 fn prompt_passphrase(prompt: &str) -> Result<String, TosumuError> {
     rpassword::prompt_password(prompt)
@@ -570,8 +654,8 @@ struct VerifySnapshot {
     btree: InspectBtreeVerifyPayload,
 }
 
-fn collect_verify_snapshot(path: &Path) -> Result<VerifySnapshot, TosumuError> {
-    let (pager, unlock) = open_pager(path)?;
+fn collect_verify_snapshot(path: &Path, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<VerifySnapshot, TosumuError> {
+    let (pager, unlock) = open_pager_with_unlock(path, unlock, no_prompt)?;
     let report = tosumu_core::inspect::verify_pager(&pager)?;
     let btree = if report.issues.is_empty() {
         match open_btree_with_unlock(path, unlock.as_ref()) {
@@ -604,8 +688,8 @@ fn collect_verify_snapshot(path: &Path) -> Result<VerifySnapshot, TosumuError> {
     Ok(VerifySnapshot { report, btree })
 }
 
-fn cmd_inspect_verify_json(path: &Path) -> Result<String, TosumuError> {
-    let snapshot = collect_verify_snapshot(path)?;
+fn cmd_inspect_verify_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<String, TosumuError> {
+    let snapshot = collect_verify_snapshot(path, unlock, no_prompt)?;
     render_json(&InspectEnvelope {
         schema_version: 1,
         command: "inspect.verify",
@@ -630,8 +714,8 @@ fn cmd_inspect_verify_json(path: &Path) -> Result<String, TosumuError> {
     })
 }
 
-fn cmd_inspect_page_json(path: &Path, pgno: u64) -> Result<String, TosumuError> {
-    let (pager, _) = open_pager(path)?;
+fn cmd_inspect_page_json(path: &Path, pgno: u64, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<String, TosumuError> {
+    let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
     let page = tosumu_core::inspect::inspect_page_from_pager(&pager, pgno)?;
     render_json(&InspectEnvelope {
         schema_version: 1,
@@ -725,30 +809,32 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
             println!("data_pages:  {}", s.data_pages);
             println!("tree_height: {}", s.tree_height);
         }
-        Command::Dump { path, page } => cmd_dump(&path, page)?,
+        Command::Dump { path, page } => cmd_dump(&path, page, None, false)?,
         Command::Hex  { path, page } => cmd_hex(&path, page)?,
-        Command::Verify { path, explain } => cmd_verify(&path, explain)?,
+        Command::Verify { path, explain } => cmd_verify(&path, explain, None, false)?,
         Command::View { path } => view::run(&path)?,
         Command::Inspect { action } => match action {
             InspectAction::Header { path, json } => {
                 if json {
                     println!("{}", cmd_inspect_header_json(&path)?);
                 } else {
-                    cmd_dump(&path, None)?;
+                    cmd_dump(&path, None, None, false)?;
                 }
             }
-            InspectAction::Verify { path, json } => {
+            InspectAction::Verify { path, json, unlock } => {
+                let (unlock, no_prompt) = resolve_inspect_unlock(unlock)?;
                 if json {
-                    println!("{}", cmd_inspect_verify_json(&path)?);
+                    println!("{}", cmd_inspect_verify_json(&path, unlock, no_prompt)?);
                 } else {
-                    cmd_verify(&path, false)?;
+                    cmd_verify(&path, false, unlock, no_prompt)?;
                 }
             }
-            InspectAction::Page { path, page, json } => {
+            InspectAction::Page { path, page, json, unlock } => {
+                let (unlock, no_prompt) = resolve_inspect_unlock(unlock)?;
                 if json {
-                    println!("{}", cmd_inspect_page_json(&path, page)?);
+                    println!("{}", cmd_inspect_page_json(&path, page, unlock, no_prompt)?);
                 } else {
-                    cmd_dump(&path, Some(page))?;
+                    cmd_dump(&path, Some(page), unlock, no_prompt)?;
                 }
             }
         },
@@ -886,7 +972,7 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
 
 // ── dump ─────────────────────────────────────────────────────────────────────
 
-fn cmd_dump(path: &std::path::Path, page: Option<u64>) -> tosumu_core::error::Result<()> {
+fn cmd_dump(path: &std::path::Path, page: Option<u64>, unlock: Option<UnlockSecret>, no_prompt: bool) -> tosumu_core::error::Result<()> {
     use tosumu_core::format::{
         PAGE_TYPE_LEAF, PAGE_TYPE_INTERNAL, PAGE_TYPE_OVERFLOW, PAGE_TYPE_FREE,
         KEYSLOT_KIND_EMPTY, KEYSLOT_KIND_SENTINEL, KEYSLOT_KIND_PASSPHRASE,
@@ -935,7 +1021,7 @@ fn cmd_dump(path: &std::path::Path, page: Option<u64>) -> tosumu_core::error::Re
             println!("version: {}", h.ks0_version);
         }
         Some(pgno) => {
-            let (pager, _) = open_pager(path)?;
+            let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
             let s = inspect_page_from_pager(&pager, pgno)?;
             let type_name = match s.page_type {
                 PAGE_TYPE_LEAF     => "Leaf",
@@ -1003,8 +1089,8 @@ fn cmd_hex(path: &std::path::Path, pgno: u64) -> tosumu_core::error::Result<()> 
 
 // ── verify ────────────────────────────────────────────────────────────────────
 
-fn cmd_verify(path: &std::path::Path, explain: bool) -> tosumu_core::error::Result<()> {
-    let snapshot = collect_verify_snapshot(path)?;
+fn cmd_verify(path: &std::path::Path, explain: bool, unlock: Option<UnlockSecret>, no_prompt: bool) -> tosumu_core::error::Result<()> {
+    let snapshot = collect_verify_snapshot(path, unlock, no_prompt)?;
     let report = snapshot.report;
     println!("verifying {} ({} data pages) ...", path.display(), report.pages_checked);
 
@@ -1346,10 +1432,12 @@ mod tests {
 
         match cli.command {
             Command::Inspect {
-                action: InspectAction::Verify { path, json },
+                action: InspectAction::Verify { path, json, unlock },
             } => {
                 assert_eq!(path, PathBuf::from("db.tsm"));
                 assert!(json);
+                assert!(!unlock.no_prompt);
+                assert!(!unlock.stdin_passphrase);
             }
             _ => panic!("unexpected command variant"),
         }
@@ -1369,11 +1457,63 @@ mod tests {
 
         match cli.command {
             Command::Inspect {
-                action: InspectAction::Page { path, page, json },
+                action: InspectAction::Page { path, page, json, unlock },
             } => {
                 assert_eq!(path, PathBuf::from("db.tsm"));
                 assert_eq!(page, 1);
                 assert!(json);
+                assert!(!unlock.no_prompt);
+                assert!(!unlock.stdin_passphrase);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_inspect_verify_with_stdin_passphrase() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "verify",
+            "--json",
+            "--stdin-passphrase",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Verify { path, json, unlock },
+            } => {
+                assert_eq!(path, PathBuf::from("db.tsm"));
+                assert!(json);
+                assert!(unlock.stdin_passphrase);
+                assert!(!unlock.no_prompt);
+                assert!(!unlock.stdin_recovery_key);
+                assert!(unlock.keyfile.is_none());
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_inspect_verify_with_no_prompt() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "verify",
+            "--json",
+            "--no-prompt",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Verify { unlock, .. },
+            } => {
+                assert!(unlock.no_prompt);
+                assert!(!unlock.stdin_passphrase);
+                assert!(!unlock.stdin_recovery_key);
+                assert!(unlock.keyfile.is_none());
             }
             _ => panic!("unexpected command variant"),
         }
@@ -1420,7 +1560,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         PageStore::create(&path).unwrap();
 
-        let rendered = cmd_inspect_verify_json(&path).unwrap();
+        let rendered = cmd_inspect_verify_json(&path, None, false).unwrap();
         let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
         assert_eq!(json["schema_version"], 1);
@@ -1441,7 +1581,7 @@ mod tests {
         let mut store = PageStore::create(&path).unwrap();
         store.put(b"alpha", b"one").unwrap();
 
-        let rendered = cmd_inspect_page_json(&path, 1).unwrap();
+        let rendered = cmd_inspect_page_json(&path, 1, None, false).unwrap();
         let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
         assert_eq!(json["schema_version"], 1);
@@ -1456,6 +1596,55 @@ mod tests {
             .any(|record| record["kind"] == "Live"
                 && record["key_hex"] == "616c706861"
                 && record["value_hex"] == "6f6e65"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_verify_json_accepts_explicit_passphrase_unlock() {
+        let path = temp_path("inspect_verify_json_passphrase_unlock");
+        let _ = std::fs::remove_file(&path);
+        let mut store = PageStore::create_encrypted(&path, "correct-horse").unwrap();
+        store.put(b"alpha", b"one").unwrap();
+
+        let rendered = cmd_inspect_verify_json(&path, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.verify");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["issue_count"], 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_page_json_accepts_explicit_passphrase_unlock() {
+        let path = temp_path("inspect_page_json_passphrase_unlock");
+        let _ = std::fs::remove_file(&path);
+        let mut store = PageStore::create_encrypted(&path, "correct-horse").unwrap();
+        store.put(b"alpha", b"one").unwrap();
+
+        let rendered = cmd_inspect_page_json(&path, 1, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.page");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["page_type_name"], "Leaf");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_verify_json_no_prompt_returns_wrong_key_for_encrypted_db() {
+        let path = temp_path("inspect_verify_json_no_prompt_wrong_key");
+        let _ = std::fs::remove_file(&path);
+        PageStore::create_encrypted(&path, "correct-horse").unwrap();
+
+        let err = cmd_inspect_verify_json(&path, None, true).err().unwrap();
+
+        assert!(matches!(err, TosumuError::WrongKey));
 
         let _ = std::fs::remove_file(&path);
     }

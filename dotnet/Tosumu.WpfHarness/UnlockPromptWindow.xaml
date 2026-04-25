@@ -1,0 +1,122 @@
+<Window x:Class="Tosumu.WpfHarness.UnlockPromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Unlock Database"
+        Width="540"
+        Height="320"
+        MinWidth="520"
+        MinHeight="300"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize"
+        Background="{StaticResource WindowBackgroundBrush}"
+        Foreground="{StaticResource TextBrush}"
+        FontFamily="Bahnschrift">
+    <Grid Margin="22">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   FontSize="24"
+                   FontWeight="SemiBold"
+                   Text="Unlock Required" />
+
+        <TextBlock x:Name="PromptTextBlock"
+                   Grid.Row="1"
+                   Margin="0,10,0,16"
+                   TextWrapping="Wrap"
+                   Foreground="{StaticResource MutedTextBrush}"
+                   Text="The database needs credentials before inspection can continue." />
+
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0"
+                       Margin="0,0,14,0"
+                       VerticalAlignment="Center"
+                       Text="Unlock mode" />
+
+            <ComboBox x:Name="UnlockModeComboBox"
+                      Grid.Column="1"
+                      Width="180"
+                      HorizontalAlignment="Left"
+                      SelectionChanged="UnlockModeComboBox_OnSelectionChanged">
+                <ComboBoxItem Tag="Passphrase" Content="Passphrase" />
+                <ComboBoxItem Tag="RecoveryKey" Content="Recovery key" />
+                <ComboBoxItem Tag="Keyfile" Content="Keyfile" />
+            </ComboBox>
+        </Grid>
+
+        <Grid Grid.Row="3"
+              Margin="0,16,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="SecretLabelTextBlock"
+                       Grid.Column="0"
+                       Margin="0,0,14,0"
+                       VerticalAlignment="Center"
+                       Text="Passphrase" />
+
+            <PasswordBox x:Name="SecretPasswordBox"
+                         Grid.Column="1"
+                         Padding="12,10"
+                         VerticalContentAlignment="Center"
+                         Background="White"
+                         BorderBrush="{StaticResource BorderBrush}"
+                         BorderThickness="1" />
+
+            <TextBox x:Name="KeyfilePathTextBox"
+                     Grid.Column="1"
+                     Padding="12,10"
+                     VerticalContentAlignment="Center"
+                     Background="White"
+                     BorderBrush="{StaticResource BorderBrush}"
+                     BorderThickness="1"
+                     Visibility="Collapsed" />
+
+            <Button x:Name="BrowseKeyfileButton"
+                    Grid.Column="2"
+                    Margin="12,0,0,0"
+                    Padding="14,10"
+                    Click="BrowseKeyfileButton_OnClick"
+                    Content="Browse"
+                    Visibility="Collapsed" />
+        </Grid>
+
+        <TextBlock Grid.Row="4"
+                   Margin="0,12,0,0"
+                   TextWrapping="Wrap"
+                   Foreground="{StaticResource MutedTextBrush}"
+                   Text="The selected credentials are used only for this retry. The inline unlock strip will also be updated if the retry proceeds." />
+
+        <StackPanel Grid.Row="5"
+                    Margin="0,18,0,0"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right">
+            <Button Width="100"
+                    Padding="14,10"
+                    Click="CancelButton_OnClick"
+                    Content="Cancel" />
+            <Button Width="120"
+                    Margin="12,0,0,0"
+                    Padding="14,10"
+                    Click="RetryButton_OnClick"
+                    Content="Retry" />
+        </StackPanel>
+    </Grid>
+</Window>

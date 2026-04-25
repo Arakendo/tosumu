@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RestoreAdditionalProjectSources>$(MSBuildThisFileDirectory)..\_packages</RestoreAdditionalProjectSources>
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)..\_packages-cache</RestorePackagesPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Tosumu.Cli" Version="0.0.0-local.5" />
+  </ItemGroup>
+
+</Project>

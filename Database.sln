@@ -1,3 +1,4 @@
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.5.2.0
@@ -7,6 +8,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tosumu.Cli", "dotnet\Tosumu.Cli\Tosumu.Cli.csproj", "{BACBB534-BC9C-8D26-2DB0-1A78E0D7F005}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tosumu.Cli.IntegrationTests", "dotnet\Tosumu.Cli.IntegrationTests\Tosumu.Cli.IntegrationTests.csproj", "{1FB5B3CD-A9AE-A2FF-CE5F-DA3CFFF8765E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tosumu.WpfHarness", "dotnet\Tosumu.WpfHarness\Tosumu.WpfHarness.csproj", "{1F9FC9EB-63E3-4923-9175-6756BD6B7496}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -22,6 +25,10 @@ Global
 		{1FB5B3CD-A9AE-A2FF-CE5F-DA3CFFF8765E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1FB5B3CD-A9AE-A2FF-CE5F-DA3CFFF8765E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1FB5B3CD-A9AE-A2FF-CE5F-DA3CFFF8765E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1F9FC9EB-63E3-4923-9175-6756BD6B7496}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1F9FC9EB-63E3-4923-9175-6756BD6B7496}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1F9FC9EB-63E3-4923-9175-6756BD6B7496}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1F9FC9EB-63E3-4923-9175-6756BD6B7496}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -29,6 +36,7 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{BACBB534-BC9C-8D26-2DB0-1A78E0D7F005} = {71E6E750-85FD-B5BC-4321-E01377EC6231}
 		{1FB5B3CD-A9AE-A2FF-CE5F-DA3CFFF8765E} = {71E6E750-85FD-B5BC-4321-E01377EC6231}
+		{1F9FC9EB-63E3-4923-9175-6756BD6B7496} = {71E6E750-85FD-B5BC-4321-E01377EC6231}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {BA21CB7E-6417-4D98-8A93-4477FA784AF1}

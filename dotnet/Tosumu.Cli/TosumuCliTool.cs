@@ -4,6 +4,73 @@ using System.Text.Json.Serialization;
 
 namespace Tosumu.Cli;
 
+public enum TosumuInspectUnlockKind
+{
+    Passphrase,
+    RecoveryKey,
+    Keyfile,
+}
+
+public sealed record TosumuInspectUnlockOptions
+{
+    private TosumuInspectUnlockOptions(TosumuInspectUnlockKind kind, string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException("Unlock value must not be empty.", nameof(value));
+        }
+
+        Kind = kind;
+        Value = value;
+    }
+
+    public TosumuInspectUnlockKind Kind { get; }
+
+    internal string Value { get; }
+
+    public static TosumuInspectUnlockOptions Passphrase(string passphrase) =>
+        new(TosumuInspectUnlockKind.Passphrase, passphrase);
+
+    public static TosumuInspectUnlockOptions RecoveryKey(string recoveryKey) =>
+        new(TosumuInspectUnlockKind.RecoveryKey, recoveryKey);
+
+    public static TosumuInspectUnlockOptions Keyfile(string keyfilePath) =>
+        new(TosumuInspectUnlockKind.Keyfile, keyfilePath);
+}
+
+public sealed class TosumuInspectCommandException : InvalidOperationException
+{
+    public TosumuInspectCommandException(
+        string command,
+        int exitCode,
+        string? errorKind,
+        string message,
+        ulong? pgno,
+        string standardOutput,
+        string standardError)
+        : base($"{command} failed with kind '{errorKind ?? "unknown"}': {message}")
+    {
+        Command = command;
+        ExitCode = exitCode;
+        ErrorKind = errorKind;
+        Pgno = pgno;
+        StandardOutput = standardOutput;
+        StandardError = standardError;
+    }
+
+    public string Command { get; }
+
+    public int ExitCode { get; }
+
+    public string? ErrorKind { get; }
+
+    public ulong? Pgno { get; }
+
+    public string StandardOutput { get; }
+
+    public string StandardError { get; }
+}
+
 public sealed class TosumuCliTool
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -40,12 +107,103 @@ public sealed class TosumuCliTool
 
     public async Task<TosumuCommandResult> RunAsync(IEnumerable<string> arguments, CancellationToken cancellationToken = default)
     {
+        return await RunProcessAsync(arguments, standardInput: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    public Task<TosumuCommandResult> RunWithStandardInputAsync(string standardInput, IEnumerable<string> arguments, CancellationToken cancellationToken = default) =>
+        RunProcessAsync(arguments, standardInput, cancellationToken);
+
+    public Task<TosumuCommandResult> RunWithStandardInputAsync(string standardInput, CancellationToken cancellationToken = default, params string[] arguments) =>
+        RunProcessAsync((IEnumerable<string>)arguments, standardInput, cancellationToken);
+
+    public async Task<TosumuInspectHeaderPayload> GetHeaderAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(new[] { "inspect", "header", "--json", path }, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectHeaderPayload>(result, "inspect.header");
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException("inspect.header", result, envelope.Error);
+        }
+
+        if (!envelope.Ok || envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect header returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
+    public async Task<TosumuInspectVerifyPayload> GetVerifyAsync(
+        string path,
+        TosumuInspectUnlockOptions? unlock = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RunInspectCommandAsync(new[] { "inspect", "verify", "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectVerifyPayload>(result, "inspect.verify");
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException("inspect.verify", result, envelope.Error);
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect verify returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
+    public async Task<TosumuInspectPagePayload> GetPageAsync(
+        string path,
+        ulong page,
+        TosumuInspectUnlockOptions? unlock = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RunInspectCommandAsync(new[] { "inspect", "page", "--page", page.ToString(), "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectPagePayload>(result, "inspect.page");
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException("inspect.page", result, envelope.Error);
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect page returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
+    public Task<TosumuCommandResult> RunAsync(params string[] arguments) =>
+        RunAsync((IEnumerable<string>)arguments, CancellationToken.None);
+
+    public Task<TosumuCommandResult> RunAsync(CancellationToken cancellationToken = default, params string[] arguments) =>
+        RunAsync((IEnumerable<string>)arguments, cancellationToken);
+
+    private async Task<TosumuCommandResult> RunProcessAsync(
+        IEnumerable<string> arguments,
+        string? standardInput,
+        CancellationToken cancellationToken)
+    {
         using var process = new Process
         {
-            StartInfo = BuildStartInfo(arguments),
+            StartInfo = BuildStartInfo(arguments, redirectStandardInput: standardInput is not null),
         };
 
         process.Start();
+
+        if (standardInput is not null)
+        {
+            await process.StandardInput.WriteAsync(standardInput.AsMemory(), cancellationToken).ConfigureAwait(false);
+            await process.StandardInput.FlushAsync().ConfigureAwait(false);
+            process.StandardInput.Close();
+        }
 
         var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
@@ -58,73 +216,42 @@ public sealed class TosumuCliTool
         return new TosumuCommandResult(process.ExitCode, stdout, stderr);
     }
 
-    public Task<TosumuCommandResult> RunAsync(params string[] arguments) =>
-        RunAsync((IEnumerable<string>)arguments, CancellationToken.None);
-
-    public Task<TosumuCommandResult> RunAsync(CancellationToken cancellationToken = default, params string[] arguments) =>
-        RunAsync((IEnumerable<string>)arguments, cancellationToken);
-
-    public async Task<TosumuInspectHeaderPayload> GetHeaderAsync(string path, CancellationToken cancellationToken = default)
+    private async Task<TosumuCommandResult> RunInspectCommandAsync(
+        IEnumerable<string> arguments,
+        TosumuInspectUnlockOptions? unlock,
+        CancellationToken cancellationToken)
     {
-        var result = await RunAsync(new[] { "inspect", "header", "--json", path }, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectHeaderPayload>(result, "inspect.header");
-
-        if (result.ExitCode != 0)
+        var finalArguments = new List<string>(arguments)
         {
-            throw new InvalidOperationException(
-                $"tosumu inspect header failed with kind '{envelope.Error?.Kind ?? "unknown"}': {envelope.Error?.Message ?? result.StandardError}");
+            "--no-prompt",
+        };
+
+        string? standardInput = null;
+        if (unlock is not null)
+        {
+            switch (unlock.Kind)
+            {
+                case TosumuInspectUnlockKind.Passphrase:
+                    finalArguments.Add("--stdin-passphrase");
+                    standardInput = unlock.Value;
+                    break;
+                case TosumuInspectUnlockKind.RecoveryKey:
+                    finalArguments.Add("--stdin-recovery-key");
+                    standardInput = unlock.Value;
+                    break;
+                case TosumuInspectUnlockKind.Keyfile:
+                    finalArguments.Add("--keyfile");
+                    finalArguments.Add(unlock.Value);
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported unlock kind: {unlock.Kind}");
+            }
         }
 
-        if (!envelope.Ok || envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect header returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return await RunProcessAsync(finalArguments, standardInput, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<TosumuInspectVerifyPayload> GetVerifyAsync(string path, CancellationToken cancellationToken = default)
-    {
-        var result = await RunAsync(new[] { "inspect", "verify", "--json", path }, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectVerifyPayload>(result, "inspect.verify");
-
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect verify failed with kind '{envelope.Error?.Kind ?? "unknown"}': {envelope.Error?.Message ?? result.StandardError}");
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect verify returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
-    }
-
-    public async Task<TosumuInspectPagePayload> GetPageAsync(string path, ulong page, CancellationToken cancellationToken = default)
-    {
-        var result = await RunAsync(new[] { "inspect", "page", "--page", page.ToString(), "--json", path }, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectPagePayload>(result, "inspect.page");
-
-        if (result.ExitCode != 0)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect page failed with kind '{envelope.Error?.Kind ?? "unknown"}': {envelope.Error?.Message ?? result.StandardError}");
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect page returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
-    }
-
-    private ProcessStartInfo BuildStartInfo(IEnumerable<string> arguments)
+    private ProcessStartInfo BuildStartInfo(IEnumerable<string> arguments, bool redirectStandardInput)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -132,6 +259,7 @@ public sealed class TosumuCliTool
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = redirectStandardInput,
         };
 
         foreach (var argument in arguments)
@@ -163,6 +291,21 @@ public sealed class TosumuCliTool
                 $"failed to deserialize tosumu JSON response.{Environment.NewLine}stdout:{Environment.NewLine}{result.StandardOutput}{Environment.NewLine}stderr:{Environment.NewLine}{result.StandardError}",
                 ex);
         }
+    }
+
+    private static TosumuInspectCommandException CreateInspectCommandException(
+        string command,
+        TosumuCommandResult result,
+        TosumuInspectErrorPayload? error)
+    {
+        return new TosumuInspectCommandException(
+            command,
+            result.ExitCode,
+            error?.Kind,
+            error?.Message ?? result.StandardError,
+            error?.Pgno,
+            result.StandardOutput,
+            result.StandardError);
     }
 }
 
