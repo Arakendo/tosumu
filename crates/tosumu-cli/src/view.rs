@@ -90,8 +90,32 @@ fn run_loop(
             continue;
         }
 
+        if app.filter_prompt_active() {
+            match key.code {
+                KeyCode::Esc => app.cancel_filter_prompt(),
+                KeyCode::Enter => app.confirm_filter_prompt(pager)?,
+                KeyCode::Backspace => app.pop_filter_char(),
+                KeyCode::Char(ch) if !ch.is_control() => app.push_filter_char(ch),
+                _ => {}
+            }
+            continue;
+        }
+
+        if app.page_jump_active() {
+            match key.code {
+                KeyCode::Esc => app.cancel_page_jump(),
+                KeyCode::Enter => app.confirm_page_jump(pager)?,
+                KeyCode::Backspace => app.pop_page_jump_digit(),
+                KeyCode::Char(digit) if digit.is_ascii_digit() => app.push_page_jump_digit(digit),
+                _ => {}
+            }
+            continue;
+        }
+
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+            KeyCode::Char('/') => app.start_filter_prompt(),
+            KeyCode::Char(':') => app.start_page_jump(),
             KeyCode::Tab | KeyCode::Right | KeyCode::Left => app.toggle_focus(),
             KeyCode::Down | KeyCode::Char('j') => app.move_down(pager)?,
             KeyCode::Up | KeyCode::Char('k') => app.move_up(pager)?,

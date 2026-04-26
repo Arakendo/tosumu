@@ -108,6 +108,7 @@ fn corrupt_page(pgno: u64) -> PageRow {
         slot_count: Some(0),
         status: PageStatus::Corrupt,
         issue: Some("corrupt".to_string()),
+        search_text: String::new(),
     }
 }
 
@@ -190,9 +191,32 @@ fn page_list_summary_formats_missing_fields() {
         slot_count: None,
         status: PageStatus::AuthFailed,
         issue: Some("auth failed".to_string()),
+        search_text: String::new(),
     };
 
     assert_eq!(page_list_summary(&page), "    9  ?         auth     v --  slots  --");
+}
+
+#[test]
+fn page_jump_prompt_overrides_footer_status() {
+    let mut app = new_app(1, Vec::new());
+
+    app.toggle_watch();
+    app.start_page_jump();
+    app.push_page_jump_digit('4');
+
+    assert_eq!(app.footer_status(), " • goto page: 4");
+}
+
+#[test]
+fn filter_prompt_overrides_footer_status() {
+    let mut app = new_app(1, Vec::new());
+
+    app.start_filter_prompt();
+    app.push_filter_char('a');
+    app.push_filter_char('u');
+
+    assert_eq!(app.footer_status(), " • filter: au");
 }
 
 #[test]
@@ -317,6 +341,38 @@ fn page_jump_uses_active_focus() {
 }
 
 #[test]
+fn confirm_page_jump_selects_matching_page() {
+    with_temp_db("view_confirm_jump", |_, pager| {
+        let pages = (1..=10).map(corrupt_page).collect::<Vec<_>>();
+        let mut app = new_app(10, pages);
+
+        app.start_page_jump();
+        app.push_page_jump_digit('7');
+        app.confirm_page_jump(pager).unwrap();
+
+        assert_eq!(app.selected, Some(6));
+        assert_eq!(app.status_suffix(), " • jumped to page 7");
+        assert!(!app.page_jump_active());
+    });
+}
+
+#[test]
+fn confirm_page_jump_reports_missing_page() {
+    with_temp_db("view_missing_jump", |_, pager| {
+        let pages = (1..=3).map(corrupt_page).collect::<Vec<_>>();
+        let mut app = new_app(3, pages);
+        app.selected = Some(0);
+
+        app.start_page_jump();
+        app.push_page_jump_digit('9');
+        app.confirm_page_jump(pager).unwrap();
+
+        assert_eq!(app.selected, Some(0));
+        assert_eq!(app.status_suffix(), " • page 9 not found");
+    });
+}
+
+#[test]
 fn watch_refresh_needed_only_when_db_or_wal_changes() {
     with_temp_db("view_watch_fingerprint", |path, _| {
         let wal = tosumu_core::wal::wal_path(path);
@@ -327,5 +383,121 @@ fn watch_refresh_needed_only_when_db_or_wal_changes() {
         std::fs::write(&wal, [0u8, 1u8, 2u8]).unwrap();
 
         assert!(watch_refresh_needed(path, Some(&fingerprint)).unwrap());
+    });
+}
+
+#[test]
+fn confirm_filter_limits_visible_pages_and_selection() {
+    with_temp_db("view_filter_selection", |_, pager| {
+        let pages = vec![
+            PageRow {
+                pgno: 1,
+                page_type: Some(PAGE_TYPE_LEAF),
+                page_version: Some(1),
+                slot_count: Some(0),
+                status: PageStatus::Ok,
+                issue: None,
+                search_text: "alpha key value".to_string(),
+            },
+            PageRow {
+                pgno: 2,
+                page_type: Some(PAGE_TYPE_LEAF),
+                page_version: Some(2),
+                slot_count: Some(0),
+                status: PageStatus::AuthFailed,
+                issue: Some("auth failed".to_string()),
+                search_text: String::new(),
+            },
+            corrupt_page(3),
+        ];
+        let mut app = new_app(3, pages);
+        app.selected = Some(0);
+
+        app.start_filter_prompt();
+        app.push_filter_char('a');
+        app.push_filter_char('u');
+        app.push_filter_char('t');
+        app.push_filter_char('h');
+        app.confirm_filter_prompt(pager).unwrap();
+
+        assert_eq!(app.visible_page_count(), 1);
+        assert_eq!(app.selected, Some(1));
+        assert_eq!(app.footer_status(), " • filter: auth (1) • filter matched 1 page(s)");
+    });
+}
+
+#[test]
+fn page_jump_uses_visible_page_indices_when_filtered() {
+    with_temp_db("view_filtered_page_jump", |_, pager| {
+        let pages = vec![
+            corrupt_page(1),
+            PageRow {
+                pgno: 2,
+                page_type: Some(PAGE_TYPE_LEAF),
+                page_version: Some(2),
+                slot_count: Some(0),
+                status: PageStatus::AuthFailed,
+                issue: Some("auth failed".to_string()),
+                search_text: String::new(),
+            },
+            PageRow {
+                pgno: 3,
+                page_type: Some(PAGE_TYPE_LEAF),
+                page_version: Some(3),
+                slot_count: Some(0),
+                status: PageStatus::AuthFailed,
+                issue: Some("auth failed".to_string()),
+                search_text: String::new(),
+            },
+        ];
+        let mut app = new_app(3, pages);
+
+        app.start_filter_prompt();
+        app.push_filter_char('a');
+        app.push_filter_char('u');
+        app.push_filter_char('t');
+        app.push_filter_char('h');
+        app.confirm_filter_prompt(pager).unwrap();
+
+        app.selected = Some(1);
+        app.select_next(pager).unwrap();
+
+        assert_eq!(app.selected, Some(2));
+    });
+}
+
+#[test]
+fn confirm_filter_matches_record_search_text() {
+    with_temp_db("view_filter_record_text", |_, pager| {
+        let pages = vec![
+            PageRow {
+                pgno: 1,
+                page_type: Some(PAGE_TYPE_LEAF),
+                page_version: Some(1),
+                slot_count: Some(0),
+                status: PageStatus::Ok,
+                issue: None,
+                search_text: "customer-id welcome".to_string(),
+            },
+            PageRow {
+                pgno: 2,
+                page_type: Some(PAGE_TYPE_LEAF),
+                page_version: Some(2),
+                slot_count: Some(0),
+                status: PageStatus::Ok,
+                issue: None,
+                search_text: "invoice archived".to_string(),
+            },
+        ];
+        let mut app = new_app(2, pages);
+
+        app.start_filter_prompt();
+        for ch in "welcome".chars() {
+            app.push_filter_char(ch);
+        }
+        app.confirm_filter_prompt(pager).unwrap();
+
+        assert_eq!(app.visible_page_count(), 1);
+        assert_eq!(app.selected, Some(0));
     });
 }
