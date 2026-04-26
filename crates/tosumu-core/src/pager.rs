@@ -1771,6 +1771,31 @@ mod tests {
         assert_eq!(reopened.get(b"recover-me").unwrap(), Some(b"value".to_vec()));
     }
 
+    #[test]
+    fn commit_txn_partial_write_returns_committed_but_flush_failed_and_reopens_cleanly() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("partial_flush_fail.tsm");
+        let wal = crate::wal::wal_path(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut tree = BTree::create(&path).unwrap();
+        tree.begin_txn().unwrap();
+        tree.put(b"recover-midwrite", b"value").unwrap();
+
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut crash_file = CrashFile::new(
+            file,
+            CrashPhase::MidWrite { fail_after_bytes: (PAGE_SIZE / 2) as u64 },
+        );
+        let err = tree.pager.commit_txn_with_phase_two_file(&mut crash_file).unwrap_err();
+        assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
+
+        drop(tree);
+
+        let reopened = BTree::open(&path).unwrap();
+        assert_eq!(reopened.get(b"recover-midwrite").unwrap(), Some(b"value".to_vec()));
+    }
+
     // ── truncation detection ──────────────────────────────────────────────────
 
     #[test]

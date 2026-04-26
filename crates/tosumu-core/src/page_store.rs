@@ -582,6 +582,39 @@ mod tests {
     }
 
     #[test]
+    fn transaction_propagates_committed_but_partial_write_failed_and_recovers_on_reopen() {
+        use crate::test_helpers::{CrashFile, CrashPhase};
+
+        let path = temp_path("txn_partial_flush_fail");
+        let wal = diff_wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut store = PageStore::create(&path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut crash_file = CrashFile::new(
+            file,
+            CrashPhase::MidWrite { fail_after_bytes: (crate::format::PAGE_SIZE / 2) as u64 },
+        );
+
+        let err = store.transaction_with_crash_file(|tx| {
+            tx.put(b"outer-mid-a", b"1")?;
+            tx.put(b"outer-mid-b", b"2")?;
+            Ok(())
+        }, &mut crash_file).unwrap_err();
+        assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
+
+        drop(store);
+
+        let reopened = PageStore::open(&path).unwrap();
+        assert_eq!(reopened.get(b"outer-mid-a").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(reopened.get(b"outer-mid-b").unwrap(), Some(b"2".to_vec()));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    #[test]
     fn spans_multiple_pages() {
         let path = temp_path("multipage");
         let _ = std::fs::remove_file(&path);
