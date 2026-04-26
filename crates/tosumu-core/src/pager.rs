@@ -1074,6 +1074,14 @@ impl Pager {
         self.commit_txn_with_phase_two_file(&mut flush_file)
     }
 
+    #[cfg(test)]
+    pub(crate) fn commit_txn_with_crash_file(
+        &mut self,
+        crash_file: &mut crate::test_helpers::CrashFile,
+    ) -> Result<()> {
+        self.commit_txn_with_phase_two_file(crash_file)
+    }
+
     /// Roll back the current transaction: discard dirty pages and restore
     /// header fields (page_count, root_page) to the values at begin_txn.
     pub fn rollback_txn(&mut self) {

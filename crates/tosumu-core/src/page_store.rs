@@ -272,6 +272,28 @@ impl PageStore {
             }
         }
     }
+
+    #[cfg(test)]
+    fn transaction_with_crash_file<F, T>(
+        &mut self,
+        f: F,
+        crash_file: &mut crate::test_helpers::CrashFile,
+    ) -> Result<T>
+    where
+        F: FnOnce(&mut PageStore) -> Result<T>,
+    {
+        self.tree.begin_txn()?;
+        match f(self) {
+            Ok(v) => {
+                self.tree.commit_txn_with_crash_file(crash_file)?;
+                Ok(v)
+            }
+            Err(e) => {
+                self.tree.rollback_txn();
+                Err(e)
+            }
+        }
+    }
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -301,6 +323,7 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use std::fs::OpenOptions;
     use tempfile;
 
     fn temp_path(name: &str) -> PathBuf {
@@ -523,6 +546,36 @@ mod tests {
         });
         assert!(result.is_err());
         assert_eq!(store.get(b"x").unwrap(), None, "rolled-back write must not be visible");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    #[test]
+    fn transaction_propagates_committed_but_flush_failed_and_recovers_on_reopen() {
+        use crate::test_helpers::{CrashFile, CrashPhase};
+
+        let path = temp_path("txn_flush_fail");
+        let wal = diff_wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut store = PageStore::create(&path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
+
+        let err = store.transaction_with_crash_file(|tx| {
+            tx.put(b"outer-a", b"1")?;
+            tx.put(b"outer-b", b"2")?;
+            Ok(())
+        }, &mut crash_file).unwrap_err();
+        assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
+
+        drop(store);
+
+        let reopened = PageStore::open(&path).unwrap();
+        assert_eq!(reopened.get(b"outer-a").unwrap(), Some(b"1".to_vec()));
+        assert_eq!(reopened.get(b"outer-b").unwrap(), Some(b"2".to_vec()));
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&wal);

@@ -409,6 +409,14 @@ impl BTree {
     /// Commit the current transaction (fsync WAL + flush dirty pages to .tsm).
     pub(crate) fn commit_txn(&mut self) -> Result<()> { self.pager.commit_txn() }
 
+    #[cfg(test)]
+    pub(crate) fn commit_txn_with_crash_file(
+        &mut self,
+        crash_file: &mut crate::test_helpers::CrashFile,
+    ) -> Result<()> {
+        self.pager.commit_txn_with_crash_file(crash_file)
+    }
+
     /// Roll back the current transaction (discard dirty pages).
     pub(crate) fn rollback_txn(&mut self) { self.pager.rollback_txn() }
 
