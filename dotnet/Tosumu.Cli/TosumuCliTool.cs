@@ -179,6 +179,25 @@ public sealed class TosumuCliTool
         return envelope.Payload;
     }
 
+    public async Task<TosumuInspectWalPayload> GetWalAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var result = await RunAsync(new[] { "inspect", "wal", "--json", path }, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectWalPayload>(result, "inspect.wal");
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException("inspect.wal", result, envelope.Error);
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect wal returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
     public async Task<TosumuInspectPagePayload> GetPageAsync(
         string path,
         ulong page,
@@ -451,6 +470,20 @@ public sealed record TosumuInspectPagesEntryPayload(
     [property: JsonPropertyName("slot_count")] ushort? SlotCount,
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("issue")] string? Issue);
+
+public sealed record TosumuInspectWalPayload(
+    [property: JsonPropertyName("wal_exists")] bool WalExists,
+    [property: JsonPropertyName("wal_path")] string WalPath,
+    [property: JsonPropertyName("record_count")] int RecordCount,
+    [property: JsonPropertyName("records")] IReadOnlyList<TosumuInspectWalRecordPayload> Records);
+
+public sealed record TosumuInspectWalRecordPayload(
+    [property: JsonPropertyName("lsn")] ulong Lsn,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("txn_id")] ulong? TxnId,
+    [property: JsonPropertyName("pgno")] ulong? Pgno,
+    [property: JsonPropertyName("page_version")] ulong? PageVersion,
+    [property: JsonPropertyName("up_to_lsn")] ulong? UpToLsn);
 
 public sealed record TosumuInspectTreePayload(
     [property: JsonPropertyName("root_pgno")] ulong RootPgno,

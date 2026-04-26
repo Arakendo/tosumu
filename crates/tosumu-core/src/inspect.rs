@@ -11,6 +11,7 @@ use std::path::Path;
 use crate::error::{Result, TosumuError};
 use crate::format::*;
 use crate::pager::Pager;
+use crate::wal::{wal_path, WalReader, WalRecord};
 
 // ── File header ───────────────────────────────────────────────────────────────
 
@@ -128,6 +129,24 @@ pub struct TreeSummary {
     pub root: TreeNodeSummary,
 }
 
+pub struct WalSummary {
+    pub wal_exists: bool,
+    pub wal_path: String,
+    pub records: Vec<WalRecordSummary>,
+}
+
+pub struct WalRecordSummary {
+    pub lsn: u64,
+    pub kind: WalRecordSummaryKind,
+}
+
+pub enum WalRecordSummaryKind {
+    Begin { txn_id: u64 },
+    PageWrite { pgno: u64, page_version: u64 },
+    Commit { txn_id: u64 },
+    Checkpoint { up_to_lsn: u64 },
+}
+
 pub struct TreeNodeSummary {
     pub pgno: u64,
     pub page_version: u64,
@@ -162,6 +181,36 @@ pub fn inspect_page(path: &Path, pgno: u64) -> Result<PageSummary> {
 pub fn inspect_tree(path: &Path) -> Result<TreeSummary> {
     let pager = Pager::open_readonly(path)?;
     inspect_tree_from_pager(&pager)
+}
+
+pub fn inspect_wal(path: &Path) -> Result<WalSummary> {
+    let wal = wal_path(path);
+    if !wal.exists() {
+        return Ok(WalSummary {
+            wal_exists: false,
+            wal_path: wal.display().to_string(),
+            records: Vec::new(),
+        });
+    }
+
+    let records = WalReader::read_all(&wal)?
+        .into_iter()
+        .map(|(lsn, record)| WalRecordSummary {
+            lsn,
+            kind: match record {
+                WalRecord::Begin { txn_id } => WalRecordSummaryKind::Begin { txn_id },
+                WalRecord::PageWrite { pgno, page_version, .. } => WalRecordSummaryKind::PageWrite { pgno, page_version },
+                WalRecord::Commit { txn_id } => WalRecordSummaryKind::Commit { txn_id },
+                WalRecord::Checkpoint { up_to_lsn } => WalRecordSummaryKind::Checkpoint { up_to_lsn },
+            },
+        })
+        .collect();
+
+    Ok(WalSummary {
+        wal_exists: true,
+        wal_path: wal.display().to_string(),
+        records,
+    })
 }
 
 pub fn inspect_pages(path: &Path) -> Result<PagesSummary> {

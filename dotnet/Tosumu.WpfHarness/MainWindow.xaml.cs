@@ -48,6 +48,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private string treeRootText = "Root page: load a database header to discover the tree root.";
     private string treeTrustText = "Trust: verify pending";
     private string unlockModeHintText = "You will be prompted only if the current database actually requires credentials.";
+    private string walSummaryText = "Load a database to inspect the WAL sidecar if one is present.";
     private Brush verifyIssueSummaryBrush = Brushes.Transparent;
     private string verifyIssueSummaryText = string.Empty;
     private Visibility verifyIssueSummaryVisibility = Visibility.Collapsed;
@@ -98,6 +99,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ObservableCollection<VerifyIssueRow> VerifyIssues { get; } = [];
 
     public ObservableCollection<PageSummaryRow> PageResults { get; } = [];
+
+    public ObservableCollection<WalRecordRow> WalRecords { get; } = [];
 
     public ObservableCollection<PageRecordRow> PageRecords { get; } = [];
 
@@ -191,6 +194,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set => SetProperty(ref unlockModeHintText, value);
     }
 
+    public string WalSummaryText
+    {
+        get => walSummaryText;
+        set => SetProperty(ref walSummaryText, value);
+    }
+
     public Brush VerifyIssueSummaryBrush
     {
         get => verifyIssueSummaryBrush;
@@ -239,6 +248,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = "Loading header...";
             AddRecentDatabasePath(path);
             var header = await LoadHeaderAsync(path);
+            await LoadWalAsync(path);
             if (ShouldAutoLoadTreeWithoutUnlock(header))
             {
                 await LoadPagesAsync(path, unlock: null);
@@ -309,6 +319,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = "Loading protectors...";
             AddRecentDatabasePath(path);
             await LoadProtectorsAsync(path);
+            await LoadWalAsync(path);
 
             StatusText = $"Loaded protectors for {System.IO.Path.GetFileName(path)}.";
         });
@@ -362,6 +373,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             await LoadHeaderAsync(path);
             await LoadProtectorsAsync(path);
+            await LoadWalAsync(path);
             await LoadPagesAsync(path, unlock);
             await LoadVerifyAsync(path, unlock);
             await LoadTreeAsync(path, unlock);
@@ -832,6 +844,49 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         LogDebug($"Loaded protectors: slots={protectors.SlotCount}.");
     }
 
+    private async Task<TosumuInspectWalPayload> LoadWalAsync(string path)
+    {
+        var wal = await GetCli().GetWalAsync(path);
+
+        WalSummaryText = wal.WalExists
+            ? $"WAL sidecar present with {wal.RecordCount} record(s)."
+            : "No WAL sidecar is present for this database.";
+
+        WalRecords.Clear();
+        if (!wal.WalExists)
+        {
+            WalRecords.Add(new WalRecordRow("-", "none", "-", "No WAL sidecar detected.", IsPlaceholder: true));
+        }
+        else if (wal.Records.Count == 0)
+        {
+            WalRecords.Add(new WalRecordRow("-", "empty", "-", "WAL exists but contains no readable records.", IsPlaceholder: true));
+        }
+        else
+        {
+            foreach (var record in wal.Records)
+            {
+                var detail = record.Kind switch
+                {
+                    "begin" => $"txn {record.TxnId}",
+                    "page_write" => $"page {record.Pgno} version {record.PageVersion}",
+                    "commit" => $"txn {record.TxnId}",
+                    "checkpoint" => $"up to LSN {record.UpToLsn}",
+                    _ => "-",
+                };
+
+                WalRecords.Add(new WalRecordRow(
+                    record.Lsn.ToString(),
+                    record.Kind.Replace('_', ' '),
+                    record.Pgno?.ToString() ?? "-",
+                    detail,
+                    IsPlaceholder: false));
+            }
+        }
+
+        LogDebug($"Loaded WAL summary: exists={wal.WalExists}, records={wal.RecordCount}.");
+        return wal;
+    }
+
     private bool TryGetValidDatabasePath(out string path)
     {
         path = DatabasePath.Trim();
@@ -955,6 +1010,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = $"Opening {Path.GetFileName(path)}...";
             AddRecentDatabasePath(path);
             var header = await LoadHeaderAsync(path);
+            await LoadWalAsync(path);
             if (ShouldAutoLoadTreeWithoutUnlock(header))
             {
                 await LoadPagesAsync(path, unlock: null);
@@ -978,6 +1034,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ResetVerifyState();
         ResetPagesState();
         ResetPageState();
+        ResetWalState();
         ResetProtectorsState();
         ResetTreeInspectorState();
     }
@@ -1003,6 +1060,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         PageResults.Clear();
         PageResults.Add(new PageSummaryRow("-", "-", "-", "-", "pending", "Load header for auth-only databases or run an unlockable inspect action to populate page summaries.", HasIssue: false, IsPlaceholder: true));
+    }
+
+    private void ResetWalState()
+    {
+        WalSummaryText = "Load a database to inspect the WAL sidecar if one is present.";
+        WalRecords.Clear();
+        WalRecords.Add(new WalRecordRow("-", "pending", "-", "Open or refresh a database to load WAL state.", IsPlaceholder: true));
     }
 
     private void ResetPageState()
@@ -1852,6 +1916,8 @@ public sealed record PageSummaryRow(string Pgno, string PageTypeName, string Pag
 public sealed record PageRecordRow(string Kind, string Slot, string RecordType, string KeyPreview, string KeyHex, string ValuePreview, string ValueHex, bool IsPlaceholder);
 
 public sealed record ProtectorSlotRow(string Slot, string Kind, string KindByte);
+
+public sealed record WalRecordRow(string Lsn, string Kind, string Pgno, string Detail, bool IsPlaceholder);
 
 public sealed record TreePageVisitRow(string Page, string Node, string Relation, bool IsPlaceholder);
 

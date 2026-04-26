@@ -59,6 +59,9 @@ impl Cli {
                 action: InspectAction::Pages { json: true, .. },
             } => Some("inspect.pages"),
             Command::Inspect {
+                action: InspectAction::Wal { json: true, .. },
+            } => Some("inspect.wal"),
+            Command::Inspect {
                 action: InspectAction::Page { json: true, .. },
             } => Some("inspect.page"),
             Command::Inspect {
@@ -192,6 +195,13 @@ enum InspectAction {
         #[command(flatten)]
         unlock: InspectUnlockArgs,
     },
+    /// Inspect the WAL sidecar if present.
+    Wal {
+        path: PathBuf,
+        /// Emit a structured JSON envelope.
+        #[arg(long)]
+        json: bool,
+    },
     /// Inspect the B-tree structure rooted at the current root page.
     Tree {
         path: PathBuf,
@@ -278,6 +288,28 @@ struct InspectPagesEntryPayload {
     state: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     issue: Option<String>,
+}
+
+#[derive(Serialize)]
+struct InspectWalPayload {
+    wal_exists: bool,
+    wal_path: String,
+    record_count: usize,
+    records: Vec<InspectWalRecordPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectWalRecordPayload {
+    lsn: u64,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    txn_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pgno: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    up_to_lsn: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -877,6 +909,57 @@ fn cmd_inspect_pages_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: 
     })
 }
 
+fn cmd_inspect_wal_json(path: &Path) -> Result<String, TosumuError> {
+    let wal = tosumu_core::inspect::inspect_wal(path)?;
+    let records = wal.records.into_iter().map(|record| match record.kind {
+        tosumu_core::inspect::WalRecordSummaryKind::Begin { txn_id } => InspectWalRecordPayload {
+            lsn: record.lsn,
+            kind: "begin",
+            txn_id: Some(txn_id),
+            pgno: None,
+            page_version: None,
+            up_to_lsn: None,
+        },
+        tosumu_core::inspect::WalRecordSummaryKind::PageWrite { pgno, page_version } => InspectWalRecordPayload {
+            lsn: record.lsn,
+            kind: "page_write",
+            txn_id: None,
+            pgno: Some(pgno),
+            page_version: Some(page_version),
+            up_to_lsn: None,
+        },
+        tosumu_core::inspect::WalRecordSummaryKind::Commit { txn_id } => InspectWalRecordPayload {
+            lsn: record.lsn,
+            kind: "commit",
+            txn_id: Some(txn_id),
+            pgno: None,
+            page_version: None,
+            up_to_lsn: None,
+        },
+        tosumu_core::inspect::WalRecordSummaryKind::Checkpoint { up_to_lsn } => InspectWalRecordPayload {
+            lsn: record.lsn,
+            kind: "checkpoint",
+            txn_id: None,
+            pgno: None,
+            page_version: None,
+            up_to_lsn: Some(up_to_lsn),
+        },
+    }).collect::<Vec<_>>();
+
+    render_json(&InspectEnvelope {
+        schema_version: 1,
+        command: "inspect.wal",
+        ok: true,
+        payload: Some(InspectWalPayload {
+            wal_exists: wal.wal_exists,
+            wal_path: wal.wal_path,
+            record_count: records.len(),
+            records,
+        }),
+        error: None,
+    })
+}
+
 fn map_tree_node_payload(node: tosumu_core::inspect::TreeNodeSummary) -> InspectTreeNodePayload {
     InspectTreeNodePayload {
         pgno: node.pgno,
@@ -1018,6 +1101,14 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
                     println!("{}", cmd_inspect_page_json(&path, page, unlock, no_prompt)?);
                 } else {
                     cmd_dump(&path, Some(page), unlock, no_prompt)?;
+                }
+            }
+            InspectAction::Wal { path, json } => {
+                let wal_json = cmd_inspect_wal_json(&path)?;
+                if json {
+                    println!("{wal_json}");
+                } else {
+                    println!("{wal_json}");
                 }
             }
             InspectAction::Tree { path, json, unlock } => {
@@ -1660,6 +1751,27 @@ mod tests {
                 assert!(json);
                 assert!(!unlock.no_prompt);
                 assert!(!unlock.stdin_passphrase);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_inspect_wal_json_subcommand() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "wal",
+            "--json",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Wal { path, json },
+            } => {
+                assert_eq!(path, PathBuf::from("db.tsm"));
+                assert!(json);
             }
             _ => panic!("unexpected command variant"),
         }

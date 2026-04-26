@@ -98,6 +98,31 @@ public sealed class PackagedCliTests : IDisposable
     }
 
     [Fact]
+    public async Task PackagedCli_can_read_structured_wal_through_wrapper()
+    {
+        var dbPath = Path.Combine(rootDirectory, "wal-json.tsm");
+
+        (await cli.RunAsync("init", dbPath)).EnsureSuccess();
+        (await cli.RunAsync("put", dbPath, "alpha", "one")).EnsureSuccess();
+
+        var wal = await cli.GetWalAsync(dbPath);
+
+        Assert.EndsWith(".wal", wal.WalPath, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(wal.RecordCount, wal.Records.Count);
+
+        if (wal.WalExists && wal.RecordCount > 0)
+        {
+            Assert.Contains(wal.Records, record => record.Kind == "begin");
+            Assert.Contains(wal.Records, record => record.Kind == "page_write" && record.Pgno >= 1);
+            Assert.Contains(wal.Records, record => record.Kind == "commit");
+        }
+        else if (!wal.WalExists)
+        {
+            Assert.Empty(wal.Records);
+        }
+    }
+
+    [Fact]
     public async Task PackagedCli_can_read_structured_page_through_wrapper()
     {
         var dbPath = Path.Combine(rootDirectory, "page-json.tsm");
