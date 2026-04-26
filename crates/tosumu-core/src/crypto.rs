@@ -151,6 +151,12 @@ pub const ARGON2_M_COST: u32 = 65_536;
 pub const ARGON2_T_COST: u32 = 3;
 pub const ARGON2_P_COST: u32 = 1;
 
+fn read_kdf_u32(kdf_params: &[u8; 32], offset: usize) -> u32 {
+    let mut bytes = [0u8; 4];
+    bytes.copy_from_slice(&kdf_params[offset..offset + 4]);
+    u32::from_le_bytes(bytes)
+}
+
 /// Derive a 32-byte KEK from a passphrase + 16-byte per-slot salt via Argon2id.
 ///
 /// `kdf_params` encodes [m_cost u32 LE][t_cost u32 LE][p_cost u32 LE][version u32 LE]
@@ -166,9 +172,9 @@ pub fn derive_passphrase_kek(
     let (m, t, p) = if kdf_params[..16].iter().all(|&b| b == 0) {
         (ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST)
     } else {
-        let m = u32::from_le_bytes(kdf_params[0..4].try_into().unwrap());
-        let t = u32::from_le_bytes(kdf_params[4..8].try_into().unwrap());
-        let p = u32::from_le_bytes(kdf_params[8..12].try_into().unwrap());
+        let m = read_kdf_u32(kdf_params, 0);
+        let t = read_kdf_u32(kdf_params, 4);
+        let p = read_kdf_u32(kdf_params, 8);
         (m, t, p)
     };
 
@@ -537,7 +543,8 @@ mod tests {
         let mac = compute_header_mac(&hmk, &page0, 1);
         // Store in page0 at OFF_HEADER_MAC
         page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-        let stored: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
+        let mut stored = [0u8; 32];
+        stored.copy_from_slice(&page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32]);
         verify_header_mac(&hmk, &page0, 1, &stored).expect("header MAC must verify");
     }
 

@@ -217,61 +217,71 @@ fn read_exact_or_eof(reader: &mut impl Read, buf: &mut [u8], start_offset: u64) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("tosumu_test_{name}_{}.log", std::process::id()))
     }
 
+    fn fresh_path(name: &str) -> PathBuf {
+        let path = temp_path(name);
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn open_clean_store(name: &str) -> (PathBuf, LogStore) {
+        let path = fresh_path(name);
+        let store = LogStore::open(&path).unwrap();
+        (path, store)
+    }
+
+    fn seed_store(path: &Path, entries: &[(&[u8], &[u8])]) {
+        let mut store = LogStore::open(path).unwrap();
+        for (key, value) in entries {
+            store.put(key, value).unwrap();
+        }
+    }
+
     #[test]
     fn put_get_round_trip() {
-        let path = temp_path("put_get");
-        let _ = std::fs::remove_file(&path);
-
-        let mut store = LogStore::open(&path).unwrap();
+        let (path, mut store) = open_clean_store("put_get");
         store.put(b"hello", b"world").unwrap();
         assert_eq!(store.get(b"hello"), Some(b"world".as_slice()));
         assert_eq!(store.get(b"missing"), None);
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn reopen_returns_same_data() {
-        let path = temp_path("reopen");
-        let _ = std::fs::remove_file(&path);
-
-        {
-            let mut store = LogStore::open(&path).unwrap();
-            store.put(b"key1", b"val1").unwrap();
-            store.put(b"key2", b"val2").unwrap();
-        }
+        let path = fresh_path("reopen");
+        seed_store(&path, &[(b"key1", b"val1"), (b"key2", b"val2")]);
 
         let store = LogStore::open(&path).unwrap();
         assert_eq!(store.get(b"key1"), Some(b"val1".as_slice()));
         assert_eq!(store.get(b"key2"), Some(b"val2".as_slice()));
         assert_eq!(store.len(), 2);
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn empty_file_opens_cleanly() {
-        let path = temp_path("empty");
-        let _ = std::fs::remove_file(&path);
+        let path = fresh_path("empty");
 
         let store = LogStore::open(&path).unwrap();
         assert!(store.is_empty());
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn delete_removes_key() {
-        let path = temp_path("delete");
-        let _ = std::fs::remove_file(&path);
-
-        let mut store = LogStore::open(&path).unwrap();
+        let (path, mut store) = open_clean_store("delete");
         store.put(b"k", b"v").unwrap();
         store.delete(b"k").unwrap();
         assert_eq!(store.get(b"k"), None);
@@ -281,15 +291,12 @@ mod tests {
         assert_eq!(store2.get(b"k"), None);
         assert!(store2.is_empty());
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn put_overwrites_existing_key() {
-        let path = temp_path("overwrite");
-        let _ = std::fs::remove_file(&path);
-
-        let mut store = LogStore::open(&path).unwrap();
+        let (path, mut store) = open_clean_store("overwrite");
         store.put(b"k", b"v1").unwrap();
         store.put(b"k", b"v2").unwrap();
         assert_eq!(store.get(b"k"), Some(b"v2".as_slice()));
@@ -297,15 +304,12 @@ mod tests {
         let store2 = LogStore::open(&path).unwrap();
         assert_eq!(store2.get(b"k"), Some(b"v2".as_slice()));
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn scan_returns_all_live_keys() {
-        let path = temp_path("scan");
-        let _ = std::fs::remove_file(&path);
-
-        let mut store = LogStore::open(&path).unwrap();
+        let (path, mut store) = open_clean_store("scan");
         store.put(b"a", b"1").unwrap();
         store.put(b"b", b"2").unwrap();
         store.put(b"c", b"3").unwrap();
@@ -315,31 +319,23 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, vec![b"a".as_slice(), b"c".as_slice()]);
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn rejects_empty_key() {
-        let path = temp_path("empty_key");
-        let _ = std::fs::remove_file(&path);
-
-        let mut store = LogStore::open(&path).unwrap();
+        let (path, mut store) = open_clean_store("empty_key");
         assert!(store.put(b"", b"v").is_err());
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 
     #[test]
     fn truncated_later_header_reports_absolute_offset() {
         use std::io::Write;
 
-        let path = temp_path("truncated_header_offset");
-        let _ = std::fs::remove_file(&path);
-
-        {
-            let mut store = LogStore::open(&path).unwrap();
-            store.put(b"a", b"b").unwrap();
-        }
+        let path = fresh_path("truncated_header_offset");
+        seed_store(&path, &[(b"a", b"b")]);
 
         {
             let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -356,6 +352,6 @@ mod tests {
             }
         ));
 
-        let _ = std::fs::remove_file(&path);
+        cleanup(&path);
     }
 }

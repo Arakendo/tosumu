@@ -98,6 +98,13 @@ enum ProtectorUnlock<'a> {
     Keyfile(&'a Path),
 }
 
+enum OpenUnlock<'a> {
+    Sentinel,
+    Passphrase(&'a str),
+    RecoveryKey(&'a str),
+    Keyfile(&'a Path),
+}
+
 impl Pager {
     // ── Construction ─────────────────────────────────────────────────────────
 
@@ -166,63 +173,12 @@ impl Pager {
     /// confidentiality**. Use `open_with_passphrase()` or
     /// `open_with_recovery_key()` for databases that require secrecy.
     pub fn open(path: &Path) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
-
-        let page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
-
-        // Read DEK from keyslot.  Sentinel = plaintext DEK; Passphrase/Recovery = return WrongKey.
-        let ks_start = KEYSLOT_REGION_OFFSET;
-        let ks_kind = page0[ks_start + KS_OFF_KIND];
-        let dek = match ks_kind {
-            KEYSLOT_KIND_SENTINEL => {
-                let mut dek = [0u8; 32];
-                dek.copy_from_slice(
-                    &page0[ks_start + KS_OFF_WRAPPED_DEK..ks_start + KS_OFF_WRAPPED_DEK + 32],
-                );
-                dek
-            }
-            KEYSLOT_KIND_PASSPHRASE | KEYSLOT_KIND_RECOVERY_KEY | KEYSLOT_KIND_KEYFILE => {
-                // Caller must use open_with_passphrase() or open_with_recovery_key().
-                return Err(TosumuError::WrongKey);
-            }
-            _ => return Err(TosumuError::NotATosumFile),
-        };
-
-        let (page_key, _header_mac_key, _audit_key) = derive_subkeys(&dek);
-        finish_open(file, page_key, None, &page0, path)
+        Self::open_inner(path, false, OpenUnlock::Sentinel)
     }
 
     /// Open an existing database file in read-only mode.
     pub fn open_readonly(path: &Path) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(path)?;
-
-        let page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
-
-        let ks_start = KEYSLOT_REGION_OFFSET;
-        let ks_kind = page0[ks_start + KS_OFF_KIND];
-        let dek = match ks_kind {
-            KEYSLOT_KIND_SENTINEL => {
-                let mut dek = [0u8; 32];
-                dek.copy_from_slice(
-                    &page0[ks_start + KS_OFF_WRAPPED_DEK..ks_start + KS_OFF_WRAPPED_DEK + 32],
-                );
-                dek
-            }
-            KEYSLOT_KIND_PASSPHRASE | KEYSLOT_KIND_RECOVERY_KEY | KEYSLOT_KIND_KEYFILE => {
-                return Err(TosumuError::WrongKey);
-            }
-            _ => return Err(TosumuError::NotATosumFile),
-        };
-
-        let (page_key, _header_mac_key, _audit_key) = derive_subkeys(&dek);
-        finish_open_readonly(file, page_key, None, &page0, path)
+        Self::open_inner(path, true, OpenUnlock::Sentinel)
     }
 
     /// Create a new passphrase-protected database file at `path`.
@@ -314,166 +270,34 @@ impl Pager {
     /// If any slot accepts, the DEK is unwrapped and the header MAC is verified.
     /// Also accepts Sentinel databases (passphrase is ignored).
     pub fn open_with_passphrase(path: &Path, passphrase: &str) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
-
-        let mut page0 = [0u8; PAGE_SIZE];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut page0)?;
-
-        validate_header(&page0)?;
-
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        // Try to unlock: scan all slots.
-        let (dek, is_encrypted) = try_unlock_passphrase(&page0, passphrase, dek_id, keyslot_count)?;
-
-        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
-        let header_mac_key = if is_encrypted {
-            // Verify header MAC before handing out the pager.
-            let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
-            verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
-            Some(derived_hmk)
-        } else {
-            None
-        };
-
-        finish_open(file, page_key, header_mac_key, &page0, path)
+        Self::open_inner(path, false, OpenUnlock::Passphrase(passphrase))
     }
 
     /// Open a passphrase-protected database file in read-only mode.
     pub fn open_with_passphrase_readonly(path: &Path, passphrase: &str) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(path)?;
-
-        let mut page0 = [0u8; PAGE_SIZE];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut page0)?;
-
-        validate_header(&page0)?;
-
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-        let (dek, is_encrypted) = try_unlock_passphrase(&page0, passphrase, dek_id, keyslot_count)?;
-
-        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
-        let header_mac_key = if is_encrypted {
-            let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
-            verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
-            Some(derived_hmk)
-        } else {
-            None
-        };
-
-        finish_open_readonly(file, page_key, header_mac_key, &page0, path)
+        Self::open_inner(path, true, OpenUnlock::Passphrase(passphrase))
     }
 
     /// Open a database using a recovery key string.
     ///
     /// Scans all keyslots, trying the recovery key against every RecoveryKey slot.
     pub fn open_with_recovery_key(path: &Path, recovery_str: &str) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
-
-        let mut page0 = [0u8; PAGE_SIZE];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut page0)?;
-
-        validate_header(&page0)?;
-
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        let kek = derive_recovery_kek(recovery_str)?;
-        let dek = try_unlock_with_kek(&page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_RECOVERY_KEY)?;
-
-        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
-        let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
-        verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
-
-        finish_open(file, page_key, Some(derived_hmk), &page0, path)
+        Self::open_inner(path, false, OpenUnlock::RecoveryKey(recovery_str))
     }
 
     /// Open a recovery-key-protected database file in read-only mode.
     pub fn open_with_recovery_key_readonly(path: &Path, recovery_str: &str) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(path)?;
-
-        let mut page0 = [0u8; PAGE_SIZE];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut page0)?;
-
-        validate_header(&page0)?;
-
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        let kek = derive_recovery_kek(recovery_str)?;
-        let dek = try_unlock_with_kek(&page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_RECOVERY_KEY)?;
-
-        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
-        let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
-        verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
-
-        finish_open_readonly(file, page_key, Some(derived_hmk), &page0, path)
+        Self::open_inner(path, true, OpenUnlock::RecoveryKey(recovery_str))
     }
 
     /// Open a database using a raw 32-byte KEK loaded from `keyfile_path`.
     pub fn open_with_keyfile(path: &Path, keyfile_path: &Path) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
-
-        let mut page0 = [0u8; PAGE_SIZE];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut page0)?;
-
-        validate_header(&page0)?;
-
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        let kek = read_keyfile_kek(keyfile_path)?;
-        let dek = try_unlock_with_kek(&page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_KEYFILE)?;
-
-        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
-        let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
-        verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
-
-        finish_open(file, page_key, Some(derived_hmk), &page0, path)
+        Self::open_inner(path, false, OpenUnlock::Keyfile(keyfile_path))
     }
 
     /// Open a keyfile-protected database file in read-only mode.
     pub fn open_with_keyfile_readonly(path: &Path, keyfile_path: &Path) -> Result<Self> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(path)?;
-
-        let mut page0 = [0u8; PAGE_SIZE];
-        file.seek(SeekFrom::Start(0))?;
-        file.read_exact(&mut page0)?;
-
-        validate_header(&page0)?;
-
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        let kek = read_keyfile_kek(keyfile_path)?;
-        let dek = try_unlock_with_kek(&page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_KEYFILE)?;
-
-        let (page_key, derived_hmk, _) = derive_subkeys(&dek);
-        let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
-        verify_header_mac(&derived_hmk, &page0, keyslot_count, &stored_mac)?;
-
-        finish_open_readonly(file, page_key, Some(derived_hmk), &page0, path)
+        Self::open_inner(path, true, OpenUnlock::Keyfile(keyfile_path))
     }
 
     // ── Key management ───────────────────────────────────────────────────────
@@ -498,31 +322,21 @@ impl Pager {
     }
 
     fn add_passphrase_protector_inner(path: &Path, unlock: ProtectorUnlock<'_>, new_passphrase: &str) -> Result<u16> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let (mut session, dek, hmk) = Page0EditSession::open_unlocked(path, unlock)?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
-        let (_, hmk, _) = derive_subkeys(&dek);
-
-        let slot_idx = find_empty_slot(&page0, keyslot_count)?;
+        let slot_idx = find_empty_slot(&session.page0, session.keyslot_count)?;
 
         let mut salt = [0u8; 16];
         getrandom::getrandom(&mut salt).map_err(|_| TosumuError::RngFailed)?;
         let kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let kek = derive_passphrase_kek(new_passphrase, &salt, &kdf_params)?;
-        let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
+        let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, session.dek_id, KEYSLOT_KIND_PASSPHRASE)?;
         let kcv = compute_kcv(&kek);
 
-        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, dek_id,
+        write_keyslot(&mut session.page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, session.dek_id,
                       &salt, &kdf_params, &wrap_nonce, &wrapped_dek, &kcv);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)?;
+        session.commit(&hmk)?;
         Ok(slot_idx)
     }
 
@@ -565,32 +379,21 @@ impl Pager {
     }
 
     fn add_recovery_key_protector_with_secret_inner(path: &Path, unlock: ProtectorUnlock<'_>, recovery_str: &str) -> Result<()> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let (mut session, dek, hmk) = Page0EditSession::open_unlocked(path, unlock)?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
-        let (_, hmk, _) = derive_subkeys(&dek);
-
-        let slot_idx = find_empty_slot(&page0, keyslot_count)?;
+        let slot_idx = find_empty_slot(&session.page0, session.keyslot_count)?;
 
         let kek = derive_recovery_kek(&recovery_str)?;
-        let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_RECOVERY_KEY)?;
+        let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, session.dek_id, KEYSLOT_KIND_RECOVERY_KEY)?;
         let kcv = compute_kcv(&kek);
 
         // Recovery key has no KDF params (HKDF, not Argon2id); salt field is zeroed.
         let zero_salt = [0u8; 16];
         let zero_kdf_params = [0u8; 32];
-        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_RECOVERY_KEY, dek_id,
+        write_keyslot(&mut session.page0, slot_idx as usize, KEYSLOT_KIND_RECOVERY_KEY, session.dek_id,
                       &zero_salt, &zero_kdf_params, &wrap_nonce, &wrapped_dek, &kcv);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)?;
-        Ok(())
+        session.commit(&hmk)
     }
 
     /// Add a keyfile protector to an existing database.
@@ -609,29 +412,19 @@ impl Pager {
     }
 
     fn add_keyfile_protector_inner(path: &Path, unlock: ProtectorUnlock<'_>, keyfile_path: &Path) -> Result<u16> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let (mut session, dek, hmk) = Page0EditSession::open_unlocked(path, unlock)?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
-        let (_, hmk, _) = derive_subkeys(&dek);
-
-        let slot_idx = find_empty_slot(&page0, keyslot_count)?;
+        let slot_idx = find_empty_slot(&session.page0, session.keyslot_count)?;
         let kek = read_keyfile_kek(keyfile_path)?;
-        let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_KEYFILE)?;
+        let (wrap_nonce, wrapped_dek) = wrap_dek(&kek, &dek, slot_idx, session.dek_id, KEYSLOT_KIND_KEYFILE)?;
         let kcv = compute_kcv(&kek);
         let zero_salt = [0u8; 16];
         let zero_kdf_params = [0u8; 32];
 
-        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_KEYFILE, dek_id,
+        write_keyslot(&mut session.page0, slot_idx as usize, KEYSLOT_KIND_KEYFILE, session.dek_id,
                       &zero_salt, &zero_kdf_params, &wrap_nonce, &wrapped_dek, &kcv);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)?;
+        session.commit(&hmk)?;
         Ok(slot_idx)
     }
 
@@ -653,23 +446,16 @@ impl Pager {
     }
 
     fn remove_keyslot_inner(path: &Path, unlock: ProtectorUnlock<'_>, slot_idx: u16) -> Result<()> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let (mut session, _, hmk) = Page0EditSession::open_unlocked(path, unlock)?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-        let dek = unlock_key_management_dek(&page0, unlock, dek_id, keyslot_count)?;
-        let (_, hmk, _) = derive_subkeys(&dek);
-
-        if slot_idx as usize >= keyslot_count {
+        if slot_idx as usize >= session.keyslot_count {
             return Err(TosumuError::InvalidArgument("slot index out of range"));
         }
 
         // Count active slots before removal.
-        let active: usize = (0..keyslot_count).filter(|&i| {
+        let active: usize = (0..session.keyslot_count).filter(|&i| {
             let ks = KEYSLOT_REGION_OFFSET + i * KEYSLOT_SIZE;
-            page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_EMPTY && page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_SENTINEL
+            session.page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_EMPTY && session.page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_SENTINEL
         }).count();
 
         if active <= 1 {
@@ -678,45 +464,37 @@ impl Pager {
 
         // Zero the slot.
         let ks = KEYSLOT_REGION_OFFSET + slot_idx as usize * KEYSLOT_SIZE;
-        page0[ks..ks + KEYSLOT_SIZE].fill(0);
+        session.page0[ks..ks + KEYSLOT_SIZE].fill(0);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)
+        session.commit(&hmk)
     }
 
     /// Rotate the KEK for the Passphrase slot at `slot_idx`.
     ///
     /// Re-wraps the DEK under a new KEK derived from `new_passphrase`.
     pub fn rekey_kek(path: &Path, slot_idx: u16, old_passphrase: &str, new_passphrase: &str) -> Result<()> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let mut session = Page0EditSession::open(path)?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        if slot_idx as usize >= keyslot_count {
+        if slot_idx as usize >= session.keyslot_count {
             return Err(TosumuError::InvalidArgument("slot index out of range"));
         }
 
         // Verify target slot is Passphrase kind.
         let ks = KEYSLOT_REGION_OFFSET + slot_idx as usize * KEYSLOT_SIZE;
-        if page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
+        if session.page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
             return Err(TosumuError::InvalidArgument("slot is not a Passphrase slot"));
         }
 
         // Unlock target slot with old passphrase.
-        let salt: [u8; 16] = page0[ks + KS_OFF_SALT..ks + KS_OFF_SALT + 16].try_into().unwrap();
-        let kdf_params: [u8; 32] = page0[ks + KS_OFF_KDF_PARAMS..ks + KS_OFF_KDF_PARAMS + 32].try_into().unwrap();
-        let wrap_nonce: [u8; 12] = page0[ks + KS_OFF_WRAP_NONCE..ks + KS_OFF_WRAP_NONCE + 12].try_into().unwrap();
-        let wrapped_dek: [u8; 48] = page0[ks + KS_OFF_WRAPPED_DEK..ks + KS_OFF_WRAPPED_DEK + 48].try_into().unwrap();
-        let kcv: [u8; 32] = page0[ks + KS_OFF_KCV..ks + KS_OFF_KCV + 32].try_into().unwrap();
+        let salt = read_keyslot_field::<16>(&session.page0, slot_idx as usize, KS_OFF_SALT, "bad keyslot salt length")?;
+        let kdf_params = read_keyslot_field::<32>(&session.page0, slot_idx as usize, KS_OFF_KDF_PARAMS, "bad keyslot kdf_params length")?;
+        let wrap_nonce = read_keyslot_field::<12>(&session.page0, slot_idx as usize, KS_OFF_WRAP_NONCE, "bad keyslot wrap nonce length")?;
+        let wrapped_dek = read_keyslot_field::<48>(&session.page0, slot_idx as usize, KS_OFF_WRAPPED_DEK, "bad keyslot wrapped DEK length")?;
+        let kcv = read_keyslot_field::<32>(&session.page0, slot_idx as usize, KS_OFF_KCV, "bad keyslot KCV length")?;
 
         let old_kek = derive_passphrase_kek(old_passphrase, &salt, &kdf_params)?;
         verify_kcv(&old_kek, &kcv)?;
-        let dek = unwrap_dek(&old_kek, &wrap_nonce, &wrapped_dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
+        let dek = unwrap_dek(&old_kek, &wrap_nonce, &wrapped_dek, slot_idx, session.dek_id, KEYSLOT_KIND_PASSPHRASE)?;
         let (_, hmk, _) = derive_subkeys(&dek);
 
         // Wrap under new passphrase with fresh salt.
@@ -724,90 +502,65 @@ impl Pager {
         getrandom::getrandom(&mut new_salt).map_err(|_| TosumuError::RngFailed)?;
         let new_kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let new_kek = derive_passphrase_kek(new_passphrase, &new_salt, &new_kdf_params)?;
-        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
+        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, session.dek_id, KEYSLOT_KIND_PASSPHRASE)?;
         let new_kcv = compute_kcv(&new_kek);
 
-        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, dek_id,
+        write_keyslot(&mut session.page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, session.dek_id,
                       &new_salt, &new_kdf_params, &new_nonce, &new_wrapped, &new_kcv);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)
+        session.commit(&hmk)
     }
 
     /// Rotate the KEK for a Passphrase slot using a recovery key to unlock the DEK.
     pub fn rekey_kek_with_recovery_key(path: &Path, slot_idx: u16, recovery_str: &str, new_passphrase: &str) -> Result<()> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let (mut session, dek, hmk) = Page0EditSession::open_unlocked(path, ProtectorUnlock::RecoveryKey(recovery_str))?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        if slot_idx as usize >= keyslot_count {
+        if slot_idx as usize >= session.keyslot_count {
             return Err(TosumuError::InvalidArgument("slot index out of range"));
         }
 
         let ks = KEYSLOT_REGION_OFFSET + slot_idx as usize * KEYSLOT_SIZE;
-        if page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
+        if session.page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
             return Err(TosumuError::InvalidArgument("slot is not a Passphrase slot"));
         }
-
-        let dek = unlock_key_management_dek(&page0, ProtectorUnlock::RecoveryKey(recovery_str), dek_id, keyslot_count)?;
-        let (_, hmk, _) = derive_subkeys(&dek);
 
         let mut new_salt = [0u8; 16];
         getrandom::getrandom(&mut new_salt).map_err(|_| TosumuError::RngFailed)?;
         let new_kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let new_kek = derive_passphrase_kek(new_passphrase, &new_salt, &new_kdf_params)?;
-        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
+        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, session.dek_id, KEYSLOT_KIND_PASSPHRASE)?;
         let new_kcv = compute_kcv(&new_kek);
 
-        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, dek_id,
+        write_keyslot(&mut session.page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, session.dek_id,
                       &new_salt, &new_kdf_params, &new_nonce, &new_wrapped, &new_kcv);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)
+        session.commit(&hmk)
     }
 
     /// Rotate the KEK for a Passphrase slot using a keyfile protector to unlock the DEK.
     pub fn rekey_kek_with_keyfile(path: &Path, slot_idx: u16, keyfile_path: &Path, new_passphrase: &str) -> Result<()> {
-        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-        let mut page0 = read_page0(&mut file)?;
-        validate_header(&page0)?;
+        let (mut session, dek, hmk) = Page0EditSession::open_unlocked(path, ProtectorUnlock::Keyfile(keyfile_path))?;
 
-        let dek_id = read_u64(&page0, OFF_DEK_ID);
-        let keyslot_count = keyslot_count(&page0);
-
-        if slot_idx as usize >= keyslot_count {
+        if slot_idx as usize >= session.keyslot_count {
             return Err(TosumuError::InvalidArgument("slot index out of range"));
         }
 
         let ks = KEYSLOT_REGION_OFFSET + slot_idx as usize * KEYSLOT_SIZE;
-        if page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
+        if session.page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
             return Err(TosumuError::InvalidArgument("slot is not a Passphrase slot"));
         }
-
-        let dek = unlock_key_management_dek(&page0, ProtectorUnlock::Keyfile(keyfile_path), dek_id, keyslot_count)?;
-        let (_, hmk, _) = derive_subkeys(&dek);
 
         let mut new_salt = [0u8; 16];
         getrandom::getrandom(&mut new_salt).map_err(|_| TosumuError::RngFailed)?;
         let new_kdf_params = pack_kdf_params(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST);
         let new_kek = derive_passphrase_kek(new_passphrase, &new_salt, &new_kdf_params)?;
-        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, dek_id, KEYSLOT_KIND_PASSPHRASE)?;
+        let (new_nonce, new_wrapped) = wrap_dek(&new_kek, &dek, slot_idx, session.dek_id, KEYSLOT_KIND_PASSPHRASE)?;
         let new_kcv = compute_kcv(&new_kek);
 
-        write_keyslot(&mut page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, dek_id,
+        write_keyslot(&mut session.page0, slot_idx as usize, KEYSLOT_KIND_PASSPHRASE, session.dek_id,
                       &new_salt, &new_kdf_params, &new_nonce, &new_wrapped, &new_kcv);
 
-        let mac = compute_header_mac(&hmk, &page0, keyslot_count);
-        page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
-
-        write_page0(&mut file, &page0)
+        session.commit(&hmk)
     }
 
     /// List active keyslots. Returns `Vec<(slot_index, kind_byte)>`.
@@ -1199,6 +952,101 @@ impl Pager {
     }
 }
 
+fn open_file_for_mode(path: &Path, read_only: bool) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    if !read_only {
+        options.write(true);
+    }
+    Ok(options.open(path)?)
+}
+
+fn sentinel_dek_from_page0(page0: &[u8; PAGE_SIZE]) -> Result<[u8; 32]> {
+    let ks_start = KEYSLOT_REGION_OFFSET;
+    let ks_kind = page0[ks_start + KS_OFF_KIND];
+    match ks_kind {
+        KEYSLOT_KIND_SENTINEL => {
+            let mut dek = [0u8; 32];
+            dek.copy_from_slice(
+                &page0[ks_start + KS_OFF_WRAPPED_DEK..ks_start + KS_OFF_WRAPPED_DEK + 32],
+            );
+            Ok(dek)
+        }
+        KEYSLOT_KIND_PASSPHRASE | KEYSLOT_KIND_RECOVERY_KEY | KEYSLOT_KIND_KEYFILE => Err(TosumuError::WrongKey),
+        _ => Err(TosumuError::NotATosumFile),
+    }
+}
+
+fn header_mac_from_page0(page0: &[u8; PAGE_SIZE]) -> [u8; 32] {
+    let mut stored_mac = [0u8; 32];
+    stored_mac.copy_from_slice(&page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32]);
+    stored_mac
+}
+
+fn unlock_page0_for_open(page0: &[u8; PAGE_SIZE], unlock: OpenUnlock<'_>) -> Result<([u8; 32], Option<[u8; 32]>)> {
+    let dek_id = read_u64(page0, OFF_DEK_ID);
+    let keyslot_count = keyslot_count(page0);
+
+    match unlock {
+        OpenUnlock::Sentinel => {
+            let dek = sentinel_dek_from_page0(page0)?;
+            let (page_key, _, _) = derive_subkeys(&dek);
+            Ok((page_key, None))
+        }
+        OpenUnlock::Passphrase(passphrase) => {
+            let (dek, is_encrypted) = try_unlock_passphrase(page0, passphrase, dek_id, keyslot_count)?;
+            let (page_key, derived_hmk, _) = derive_subkeys(&dek);
+            let header_mac_key = if is_encrypted {
+                verify_header_mac(&derived_hmk, page0, keyslot_count, &header_mac_from_page0(page0))?;
+                Some(derived_hmk)
+            } else {
+                None
+            };
+            Ok((page_key, header_mac_key))
+        }
+        OpenUnlock::RecoveryKey(recovery_str) => {
+            let kek = derive_recovery_kek(recovery_str)?;
+            let dek = try_unlock_with_kek(page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_RECOVERY_KEY)?;
+            let (page_key, derived_hmk, _) = derive_subkeys(&dek);
+            verify_header_mac(&derived_hmk, page0, keyslot_count, &header_mac_from_page0(page0))?;
+            Ok((page_key, Some(derived_hmk)))
+        }
+        OpenUnlock::Keyfile(keyfile_path) => {
+            let kek = read_keyfile_kek(keyfile_path)?;
+            let dek = try_unlock_with_kek(page0, &kek, dek_id, keyslot_count, KEYSLOT_KIND_KEYFILE)?;
+            let (page_key, derived_hmk, _) = derive_subkeys(&dek);
+            verify_header_mac(&derived_hmk, page0, keyslot_count, &header_mac_from_page0(page0))?;
+            Ok((page_key, Some(derived_hmk)))
+        }
+    }
+}
+
+fn finish_open_for_mode(
+    file: File,
+    page_key: [u8; 32],
+    header_mac_key: Option<[u8; 32]>,
+    page0: &[u8; PAGE_SIZE],
+    path: &Path,
+    read_only: bool,
+) -> Result<Pager> {
+    if read_only {
+        finish_open_readonly(file, page_key, header_mac_key, page0, path)
+    } else {
+        finish_open(file, page_key, header_mac_key, page0, path)
+    }
+}
+
+impl Pager {
+    fn open_inner(path: &Path, read_only: bool, unlock: OpenUnlock<'_>) -> Result<Self> {
+        let mut file = open_file_for_mode(path, read_only)?;
+        let page0 = read_page0(&mut file)?;
+        validate_header(&page0)?;
+
+        let (page_key, header_mac_key) = unlock_page0_for_open(&page0, unlock)?;
+        finish_open_for_mode(file, page_key, header_mac_key, &page0, path, read_only)
+    }
+}
+
 // ── Page header helpers ───────────────────────────────────────────────────────
 
 fn write_u16_buf(buf: &mut [u8], offset: usize, v: u16) {
@@ -1299,6 +1147,70 @@ fn write_page0(file: &mut File, page0: &[u8; PAGE_SIZE]) -> Result<()> {
     Ok(())
 }
 
+fn read_page0_field<const N: usize>(
+    page0: &[u8; PAGE_SIZE],
+    offset: usize,
+    reason: &'static str,
+) -> Result<[u8; N]> {
+    let end = offset
+        .checked_add(N)
+        .ok_or(TosumuError::Corrupt { pgno: 0, reason })?;
+    let bytes = page0
+        .get(offset..end)
+        .ok_or(TosumuError::Corrupt { pgno: 0, reason })?;
+    let mut value = [0u8; N];
+    value.copy_from_slice(bytes);
+    Ok(value)
+}
+
+fn read_keyslot_field<const N: usize>(
+    page0: &[u8; PAGE_SIZE],
+    slot_idx: usize,
+    field_offset: usize,
+    reason: &'static str,
+) -> Result<[u8; N]> {
+    let ks = KEYSLOT_REGION_OFFSET + slot_idx * KEYSLOT_SIZE;
+    read_page0_field(page0, ks + field_offset, reason)
+}
+
+fn read_header_mac_field(page0: &[u8; PAGE_SIZE]) -> Result<[u8; 32]> {
+    read_page0_field(page0, OFF_HEADER_MAC, "bad header MAC length")
+}
+
+struct Page0EditSession {
+    file: File,
+    page0: [u8; PAGE_SIZE],
+    dek_id: u64,
+    keyslot_count: usize,
+}
+
+impl Page0EditSession {
+    fn open(path: &Path) -> Result<Self> {
+        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        let page0 = read_page0(&mut file)?;
+        validate_header(&page0)?;
+        Ok(Self {
+            dek_id: read_u64(&page0, OFF_DEK_ID),
+            keyslot_count: keyslot_count(&page0),
+            file,
+            page0,
+        })
+    }
+
+    fn open_unlocked(path: &Path, unlock: ProtectorUnlock<'_>) -> Result<(Self, [u8; 32], [u8; 32])> {
+        let session = Self::open(path)?;
+        let dek = unlock_key_management_dek(&session.page0, unlock, session.dek_id, session.keyslot_count)?;
+        let (_, hmk, _) = derive_subkeys(&dek);
+        Ok((session, dek, hmk))
+    }
+
+    fn commit(mut self, hmk: &[u8; 32]) -> Result<()> {
+        let mac = compute_header_mac(hmk, &self.page0, self.keyslot_count);
+        self.page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&mac);
+        write_page0(&mut self.file, &self.page0)
+    }
+}
+
 /// Write a single keyslot into `page0` at `slot_idx`.
 fn write_keyslot(
     page0: &mut [u8; PAGE_SIZE],
@@ -1368,11 +1280,11 @@ fn try_unlock_passphrase(
         if page0[ks + KS_OFF_KIND] != KEYSLOT_KIND_PASSPHRASE {
             continue;
         }
-        let salt: [u8; 16] = page0[ks + KS_OFF_SALT..ks + KS_OFF_SALT + 16].try_into().unwrap();
-        let kdf_params: [u8; 32] = page0[ks + KS_OFF_KDF_PARAMS..ks + KS_OFF_KDF_PARAMS + 32].try_into().unwrap();
-        let kcv: [u8; 32] = page0[ks + KS_OFF_KCV..ks + KS_OFF_KCV + 32].try_into().unwrap();
-        let wrap_nonce: [u8; 12] = page0[ks + KS_OFF_WRAP_NONCE..ks + KS_OFF_WRAP_NONCE + 12].try_into().unwrap();
-        let wrapped_dek: [u8; 48] = page0[ks + KS_OFF_WRAPPED_DEK..ks + KS_OFF_WRAPPED_DEK + 48].try_into().unwrap();
+        let salt = read_keyslot_field::<16>(page0, i, KS_OFF_SALT, "bad keyslot salt length")?;
+        let kdf_params = read_keyslot_field::<32>(page0, i, KS_OFF_KDF_PARAMS, "bad keyslot kdf_params length")?;
+        let kcv = read_keyslot_field::<32>(page0, i, KS_OFF_KCV, "bad keyslot KCV length")?;
+        let wrap_nonce = read_keyslot_field::<12>(page0, i, KS_OFF_WRAP_NONCE, "bad keyslot wrap nonce length")?;
+        let wrapped_dek = read_keyslot_field::<48>(page0, i, KS_OFF_WRAPPED_DEK, "bad keyslot wrapped DEK length")?;
 
         let kek = match derive_passphrase_kek(passphrase, &salt, &kdf_params) {
             Ok(k) => k,
@@ -1401,12 +1313,12 @@ fn try_unlock_with_kek(
         if page0[ks + KS_OFF_KIND] != kind {
             continue;
         }
-        let kcv: [u8; 32] = page0[ks + KS_OFF_KCV..ks + KS_OFF_KCV + 32].try_into().unwrap();
+        let kcv = read_keyslot_field::<32>(page0, i, KS_OFF_KCV, "bad keyslot KCV length")?;
         if verify_kcv(kek, &kcv).is_err() {
             continue;
         }
-        let wrap_nonce: [u8; 12] = page0[ks + KS_OFF_WRAP_NONCE..ks + KS_OFF_WRAP_NONCE + 12].try_into().unwrap();
-        let wrapped_dek: [u8; 48] = page0[ks + KS_OFF_WRAPPED_DEK..ks + KS_OFF_WRAPPED_DEK + 48].try_into().unwrap();
+        let wrap_nonce = read_keyslot_field::<12>(page0, i, KS_OFF_WRAP_NONCE, "bad keyslot wrap nonce length")?;
+        let wrapped_dek = read_keyslot_field::<48>(page0, i, KS_OFF_WRAPPED_DEK, "bad keyslot wrapped DEK length")?;
         if let Ok(dek) = unwrap_dek(kek, &wrap_nonce, &wrapped_dek, i as u16, dek_id, kind) {
             return Ok(dek);
         }
@@ -1478,7 +1390,7 @@ fn finish_open(
         validate_header(&refreshed)?;
         if let Some(ref hmk) = header_mac_key {
             let keyslot_count = keyslot_count(&refreshed);
-            let stored_mac: [u8; 32] = refreshed[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
+            let stored_mac = read_header_mac_field(&refreshed)?;
             verify_header_mac(hmk, &refreshed, keyslot_count, &stored_mac)?;
         }
         let page_count = read_u64(&refreshed, OFF_PAGE_COUNT);
@@ -1568,7 +1480,7 @@ fn overlay_committed_wal(wal_path: &Path, pager: &mut Pager) -> Result<()> {
                             validate_header(page0)?;
                             if let Some(ref hmk) = pager.header_mac_key {
                                 let keyslot_count = keyslot_count(page0);
-                                let stored_mac: [u8; 32] = page0[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].try_into().unwrap();
+                                let stored_mac = read_header_mac_field(page0)?;
                                 verify_header_mac(hmk, page0, keyslot_count, &stored_mac)?;
                             }
                             pager.page_count = read_u64(page0, OFF_PAGE_COUNT);

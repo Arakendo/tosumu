@@ -119,20 +119,7 @@ public sealed class TosumuCliTool
     public async Task<TosumuInspectHeaderPayload> GetHeaderAsync(string path, CancellationToken cancellationToken = default)
     {
         var result = await RunAsync(new[] { "inspect", "header", "--json", path }, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectHeaderPayload>(result, "inspect.header");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.header", result, envelope.Error);
-        }
-
-        if (!envelope.Ok || envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect header returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectHeaderPayload>(result, "inspect.header", requireOkEnvelope: true);
     }
 
     public async Task<TosumuInspectVerifyPayload> GetVerifyAsync(
@@ -141,20 +128,7 @@ public sealed class TosumuCliTool
         CancellationToken cancellationToken = default)
     {
         var result = await RunInspectCommandAsync(new[] { "inspect", "verify", "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectVerifyPayload>(result, "inspect.verify");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.verify", result, envelope.Error);
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect verify returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectVerifyPayload>(result, "inspect.verify");
     }
 
     public async Task<TosumuInspectPagesPayload> GetPagesAsync(
@@ -163,39 +137,13 @@ public sealed class TosumuCliTool
         CancellationToken cancellationToken = default)
     {
         var result = await RunInspectCommandAsync(new[] { "inspect", "pages", "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectPagesPayload>(result, "inspect.pages");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.pages", result, envelope.Error);
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect pages returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectPagesPayload>(result, "inspect.pages");
     }
 
     public async Task<TosumuInspectWalPayload> GetWalAsync(string path, CancellationToken cancellationToken = default)
     {
         var result = await RunAsync(new[] { "inspect", "wal", "--json", path }, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectWalPayload>(result, "inspect.wal");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.wal", result, envelope.Error);
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect wal returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectWalPayload>(result, "inspect.wal");
     }
 
     public async Task<TosumuInspectPagePayload> GetPageAsync(
@@ -205,20 +153,7 @@ public sealed class TosumuCliTool
         CancellationToken cancellationToken = default)
     {
         var result = await RunInspectCommandAsync(new[] { "inspect", "page", "--page", page.ToString(), "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectPagePayload>(result, "inspect.page");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.page", result, envelope.Error);
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect page returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectPagePayload>(result, "inspect.page");
     }
 
     public async Task<TosumuInspectTreePayload> GetTreeAsync(
@@ -227,39 +162,13 @@ public sealed class TosumuCliTool
         CancellationToken cancellationToken = default)
     {
         var result = await RunInspectCommandAsync(new[] { "inspect", "tree", "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectTreePayload>(result, "inspect.tree");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.tree", result, envelope.Error);
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect tree returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectTreePayload>(result, "inspect.tree");
     }
 
     public async Task<TosumuInspectProtectorsPayload> GetProtectorsAsync(string path, CancellationToken cancellationToken = default)
     {
         var result = await RunAsync(new[] { "inspect", "protectors", "--json", path }, cancellationToken).ConfigureAwait(false);
-        var envelope = DeserializeEnvelope<TosumuInspectProtectorsPayload>(result, "inspect.protectors");
-
-        if (result.ExitCode != 0)
-        {
-            throw CreateInspectCommandException("inspect.protectors", result, envelope.Error);
-        }
-
-        if (envelope.Payload is null)
-        {
-            throw new InvalidOperationException(
-                $"tosumu inspect protectors returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
-        }
-
-        return envelope.Payload;
+        return ExtractInspectPayload<TosumuInspectProtectorsPayload>(result, "inspect.protectors");
     }
 
     public Task<TosumuCommandResult> RunAsync(params string[] arguments) =>
@@ -375,6 +284,28 @@ public sealed class TosumuCliTool
                 $"failed to deserialize tosumu JSON response.{Environment.NewLine}stdout:{Environment.NewLine}{result.StandardOutput}{Environment.NewLine}stderr:{Environment.NewLine}{result.StandardError}",
                 ex);
         }
+    }
+
+    private static TPayload ExtractInspectPayload<TPayload>(
+        TosumuCommandResult result,
+        string expectedCommand,
+        bool requireOkEnvelope = false)
+        where TPayload : class
+    {
+        var envelope = DeserializeEnvelope<TPayload>(result, expectedCommand);
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException(expectedCommand, result, envelope.Error);
+        }
+
+        if ((requireOkEnvelope && !envelope.Ok) || envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu {expectedCommand.Replace('.', ' ')} returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
     }
 
     private static TosumuInspectCommandException CreateInspectCommandException(
