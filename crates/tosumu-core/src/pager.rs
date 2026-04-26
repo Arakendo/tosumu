@@ -75,6 +75,23 @@ pub struct Pager {
     txn_saved_freelist_head: u64,
 }
 
+trait PagerPhaseTwoFile: Seek + Write {
+    fn sync_data(&mut self) -> std::io::Result<()>;
+}
+
+impl PagerPhaseTwoFile for File {
+    fn sync_data(&mut self) -> std::io::Result<()> {
+        File::sync_data(self)
+    }
+}
+
+#[cfg(test)]
+impl PagerPhaseTwoFile for crate::test_helpers::CrashFile {
+    fn sync_data(&mut self) -> std::io::Result<()> {
+        crate::test_helpers::CrashFile::sync_data(self)
+    }
+}
+
 enum ProtectorUnlock<'a> {
     Passphrase(&'a str),
     RecoveryKey(&'a str),
@@ -983,7 +1000,27 @@ impl Pager {
     ///   A failure here returns [`TosumuError::CommittedButFlushFailed`].  The handle is
     ///   marked idle so subsequent calls do not panic, but the caller must reopen — WAL
     ///   recovery will replay the committed transaction automatically.
-    pub fn commit_txn(&mut self) -> Result<()> {
+    fn flush_committed_pages<T: PagerPhaseTwoFile>(
+        flush_file: &mut T,
+        pages: &[(u64, Box<[u8; PAGE_SIZE]>)],
+        page0_frame: Option<&Box<[u8; PAGE_SIZE]>>,
+    ) -> Result<()> {
+        for (pgno, frame) in pages {
+            let offset = *pgno * PAGE_SIZE as u64;
+            flush_file.seek(SeekFrom::Start(offset))?;
+            flush_file.write_all(frame.as_ref())?;
+        }
+        if let Some(frame) = page0_frame {
+            flush_file.seek(SeekFrom::Start(0))?;
+            flush_file.write_all(frame.as_ref())?;
+        }
+        if !pages.is_empty() || page0_frame.is_some() {
+            flush_file.sync_data()?;
+        }
+        Ok(())
+    }
+
+    fn commit_txn_with_phase_two_file<T: PagerPhaseTwoFile>(&mut self, flush_file: &mut T) -> Result<()> {
         self.ensure_writable()?;
         assert!(self.txn_active, "commit_txn called with no active transaction");
 
@@ -1017,22 +1054,7 @@ impl Pager {
         // fsync at the end.  WAL recovery covers crashes, so this flush is opportunistic.
         // A failure here means the data is safe in the WAL but the handle's caches no
         // longer reflect .tsm — caller must reopen.
-        let flush_result = (|| -> Result<()> {
-            for (pgno, frame) in &pages {
-                let offset = *pgno * PAGE_SIZE as u64;
-                self.file.seek(SeekFrom::Start(offset))?;
-                self.file.write_all(frame.as_ref())?;
-            }
-            // Write the updated header (page 0) last, after all data pages.
-            if let Some(ref frame) = page0_frame {
-                self.file.seek(SeekFrom::Start(0))?;
-                self.file.write_all(frame.as_ref())?;
-            }
-            if !pages.is_empty() || page0_frame.is_some() {
-                self.file.sync_data()?;
-            }
-            Ok(())
-        })();
+        let flush_result = Self::flush_committed_pages(flush_file, &pages, page0_frame.as_ref());
         if let Err(e) = flush_result {
             let io_err = match e {
                 TosumuError::Io(io) => io,
@@ -1045,6 +1067,11 @@ impl Pager {
         // let a later reopen replay stale snapshots over newer auto-commit writes.
         self.wal_mut()?.truncate()?;
         Ok(())
+    }
+
+    pub fn commit_txn(&mut self) -> Result<()> {
+        let mut flush_file = self.file.try_clone()?;
+        self.commit_txn_with_phase_two_file(&mut flush_file)
     }
 
     /// Roll back the current transaction: discard dirty pages and restore
@@ -1596,6 +1623,8 @@ fn write_file_header(page0: &mut [u8; PAGE_SIZE], dek: &[u8; 32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::btree::BTree;
+    use crate::test_helpers::{CrashFile, CrashPhase};
     use tempfile::TempDir;
 
     /// Create a Pager with one allocated data page. Returns (Pager, TempDir, pgno=1).
@@ -1710,6 +1739,28 @@ mod tests {
                 "page_type {pt} should be accepted",
             );
         }
+    }
+
+    #[test]
+    fn commit_txn_flush_failure_returns_committed_but_flush_failed_and_reopens_cleanly() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("flush_fail.tsm");
+        let wal = crate::wal::wal_path(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut tree = BTree::create(&path).unwrap();
+        tree.begin_txn().unwrap();
+        tree.put(b"recover-me", b"value").unwrap();
+
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
+        let err = tree.pager.commit_txn_with_phase_two_file(&mut crash_file).unwrap_err();
+        assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
+
+        drop(tree);
+
+        let reopened = BTree::open(&path).unwrap();
+        assert_eq!(reopened.get(b"recover-me").unwrap(), Some(b"value".to_vec()));
     }
 
     // ── truncation detection ──────────────────────────────────────────────────
