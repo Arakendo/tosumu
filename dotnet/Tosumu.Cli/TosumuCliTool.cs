@@ -157,6 +157,28 @@ public sealed class TosumuCliTool
         return envelope.Payload;
     }
 
+    public async Task<TosumuInspectPagesPayload> GetPagesAsync(
+        string path,
+        TosumuInspectUnlockOptions? unlock = null,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await RunInspectCommandAsync(new[] { "inspect", "pages", "--json", path }, unlock, cancellationToken).ConfigureAwait(false);
+        var envelope = DeserializeEnvelope<TosumuInspectPagesPayload>(result, "inspect.pages");
+
+        if (result.ExitCode != 0)
+        {
+            throw CreateInspectCommandException("inspect.pages", result, envelope.Error);
+        }
+
+        if (envelope.Payload is null)
+        {
+            throw new InvalidOperationException(
+                $"tosumu inspect pages returned no payload. stderr:{Environment.NewLine}{result.StandardError}");
+        }
+
+        return envelope.Payload;
+    }
+
     public async Task<TosumuInspectPagePayload> GetPageAsync(
         string path,
         ulong page,
@@ -417,6 +439,18 @@ public sealed record TosumuInspectPagePayload(
     [property: JsonPropertyName("free_start")] ushort FreeStart,
     [property: JsonPropertyName("free_end")] ushort FreeEnd,
     [property: JsonPropertyName("records")] IReadOnlyList<TosumuInspectRecordPayload> Records);
+
+public sealed record TosumuInspectPagesPayload(
+    [property: JsonPropertyName("pages")] IReadOnlyList<TosumuInspectPagesEntryPayload> Pages);
+
+public sealed record TosumuInspectPagesEntryPayload(
+    [property: JsonPropertyName("pgno")] ulong Pgno,
+    [property: JsonPropertyName("page_version")] ulong? PageVersion,
+    [property: JsonPropertyName("page_type")] byte? PageType,
+    [property: JsonPropertyName("page_type_name")] string? PageTypeName,
+    [property: JsonPropertyName("slot_count")] ushort? SlotCount,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("issue")] string? Issue);
 
 public sealed record TosumuInspectTreePayload(
     [property: JsonPropertyName("root_pgno")] ulong RootPgno,

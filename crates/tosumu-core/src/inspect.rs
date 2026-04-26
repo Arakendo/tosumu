@@ -103,6 +103,26 @@ pub struct PageSummary {
     pub records: Vec<RecordInfo>,
 }
 
+pub struct PagesSummary {
+    pub pages: Vec<PageListEntry>,
+}
+
+pub struct PageListEntry {
+    pub pgno: u64,
+    pub page_version: Option<u64>,
+    pub page_type: Option<u8>,
+    pub slot_count: Option<u16>,
+    pub state: PageInspectState,
+    pub issue: Option<String>,
+}
+
+pub enum PageInspectState {
+    Ok,
+    AuthFailed,
+    Corrupt,
+    Io,
+}
+
 pub struct TreeSummary {
     pub root_pgno: u64,
     pub root: TreeNodeSummary,
@@ -142,6 +162,11 @@ pub fn inspect_page(path: &Path, pgno: u64) -> Result<PageSummary> {
 pub fn inspect_tree(path: &Path) -> Result<TreeSummary> {
     let pager = Pager::open_readonly(path)?;
     inspect_tree_from_pager(&pager)
+}
+
+pub fn inspect_pages(path: &Path) -> Result<PagesSummary> {
+    let pager = Pager::open_readonly(path)?;
+    inspect_pages_from_pager(&pager)
 }
 
 /// Decrypt and parse page `pgno` from an already-open pager.
@@ -224,6 +249,57 @@ pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> 
         free_end,
         records,
     })
+}
+
+pub fn inspect_pages_from_pager(pager: &Pager) -> Result<PagesSummary> {
+    let mut pages = Vec::with_capacity(pager.page_count().saturating_sub(1) as usize);
+
+    for pgno in 1..pager.page_count() {
+        match pager.read_page(pgno) {
+            Ok((plaintext, page_version)) => {
+                pages.push(PageListEntry {
+                    pgno,
+                    page_version: Some(page_version),
+                    page_type: Some(plaintext[PAGE_OFF_TYPE]),
+                    slot_count: Some(read_u16(&plaintext, PAGE_OFF_SLOT_COUNT)),
+                    state: PageInspectState::Ok,
+                    issue: None,
+                });
+            }
+            Err(TosumuError::AuthFailed { .. }) => {
+                pages.push(PageListEntry {
+                    pgno,
+                    page_version: None,
+                    page_type: None,
+                    slot_count: None,
+                    state: PageInspectState::AuthFailed,
+                    issue: Some("authentication tag mismatch (page corrupted or tampered)".to_owned()),
+                });
+            }
+            Err(TosumuError::Corrupt { reason, .. }) => {
+                pages.push(PageListEntry {
+                    pgno,
+                    page_version: None,
+                    page_type: None,
+                    slot_count: None,
+                    state: PageInspectState::Corrupt,
+                    issue: Some(format!("corrupt: {reason}")),
+                });
+            }
+            Err(error) => {
+                pages.push(PageListEntry {
+                    pgno,
+                    page_version: None,
+                    page_type: None,
+                    slot_count: None,
+                    state: PageInspectState::Io,
+                    issue: Some(format!("I/O error: {error}")),
+                });
+            }
+        }
+    }
+
+    Ok(PagesSummary { pages })
 }
 
 pub fn inspect_tree_from_pager(pager: &Pager) -> Result<TreeSummary> {

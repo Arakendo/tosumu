@@ -605,7 +605,7 @@
                                Margin="0,0,0,12"
                                FontSize="18"
                                FontWeight="SemiBold"
-                               Text="Page Results" />
+                               Text="Pages" />
                     <ListView ItemsSource="{Binding PageResults}"
                               x:Name="PageResultsListView"
                               BorderThickness="0"
@@ -632,9 +632,11 @@
                         <ListView.View>
                             <GridView>
                                 <GridViewColumn Width="80" Header="Page" DisplayMemberBinding="{Binding Pgno}" />
-                                <GridViewColumn Width="90" Header="Auth" DisplayMemberBinding="{Binding AuthOkLabel}" />
+                                <GridViewColumn Width="110" Header="Type" DisplayMemberBinding="{Binding PageTypeName}" />
                                 <GridViewColumn Width="120" Header="Version" DisplayMemberBinding="{Binding PageVersionLabel}" />
-                                <GridViewColumn Width="250" Header="Issue" DisplayMemberBinding="{Binding Issue}" />
+                                <GridViewColumn Width="80" Header="Slots" DisplayMemberBinding="{Binding SlotCountLabel}" />
+                                <GridViewColumn Width="110" Header="State" DisplayMemberBinding="{Binding StateLabel}" />
+                                <GridViewColumn Width="170" Header="Issue" DisplayMemberBinding="{Binding Issue}" />
                             </GridView>
                         </ListView.View>
                     </ListView>

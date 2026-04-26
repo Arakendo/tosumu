@@ -56,6 +56,9 @@ impl Cli {
                 action: InspectAction::Verify { json: true, .. },
             } => Some("inspect.verify"),
             Command::Inspect {
+                action: InspectAction::Pages { json: true, .. },
+            } => Some("inspect.pages"),
+            Command::Inspect {
                 action: InspectAction::Page { json: true, .. },
             } => Some("inspect.page"),
             Command::Inspect {
@@ -168,6 +171,15 @@ enum InspectAction {
         #[command(flatten)]
         unlock: InspectUnlockArgs,
     },
+    /// Inspect lightweight summaries for every data page.
+    Pages {
+        path: PathBuf,
+        /// Emit a structured JSON envelope.
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        unlock: InspectUnlockArgs,
+    },
     /// Inspect a single decoded page.
     Page {
         path: PathBuf,
@@ -245,6 +257,27 @@ struct InspectPagePayload {
     free_start: u16,
     free_end: u16,
     records: Vec<InspectRecordPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectPagesPayload {
+    pages: Vec<InspectPagesEntryPayload>,
+}
+
+#[derive(Serialize)]
+struct InspectPagesEntryPayload {
+    pgno: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_version: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_type: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_type_name: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slot_count: Option<u16>,
+    state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issue: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -817,6 +850,33 @@ fn cmd_inspect_page_json(path: &Path, pgno: u64, unlock: Option<UnlockSecret>, n
     })
 }
 
+fn cmd_inspect_pages_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<String, TosumuError> {
+    let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
+    let pages = tosumu_core::inspect::inspect_pages_from_pager(&pager)?;
+    render_json(&InspectEnvelope {
+        schema_version: 1,
+        command: "inspect.pages",
+        ok: pages.pages.iter().all(|page| matches!(page.state, tosumu_core::inspect::PageInspectState::Ok)),
+        payload: Some(InspectPagesPayload {
+            pages: pages.pages.into_iter().map(|page| InspectPagesEntryPayload {
+                pgno: page.pgno,
+                page_version: page.page_version,
+                page_type: page.page_type,
+                page_type_name: page.page_type.map(page_type_name),
+                slot_count: page.slot_count,
+                state: match page.state {
+                    tosumu_core::inspect::PageInspectState::Ok => "ok",
+                    tosumu_core::inspect::PageInspectState::AuthFailed => "auth_failed",
+                    tosumu_core::inspect::PageInspectState::Corrupt => "corrupt",
+                    tosumu_core::inspect::PageInspectState::Io => "io",
+                },
+                issue: page.issue,
+            }).collect(),
+        }),
+        error: None,
+    })
+}
+
 fn map_tree_node_payload(node: tosumu_core::inspect::TreeNodeSummary) -> InspectTreeNodePayload {
     InspectTreeNodePayload {
         pgno: node.pgno,
@@ -941,6 +1001,15 @@ fn run(cli: Cli) -> Result<(), TosumuError> {
                     println!("{}", cmd_inspect_verify_json(&path, unlock, no_prompt)?);
                 } else {
                     cmd_verify(&path, false, unlock, no_prompt)?;
+                }
+            }
+            InspectAction::Pages { path, json, unlock } => {
+                let (unlock, no_prompt) = resolve_inspect_unlock(unlock)?;
+                let pages_json = cmd_inspect_pages_json(&path, unlock, no_prompt)?;
+                if json {
+                    println!("{pages_json}");
+                } else {
+                    println!("{pages_json}");
                 }
             }
             InspectAction::Page { path, page, json, unlock } => {
@@ -1563,6 +1632,29 @@ mod tests {
         match cli.command {
             Command::Inspect {
                 action: InspectAction::Verify { path, json, unlock },
+            } => {
+                assert_eq!(path, PathBuf::from("db.tsm"));
+                assert!(json);
+                assert!(!unlock.no_prompt);
+                assert!(!unlock.stdin_passphrase);
+            }
+            _ => panic!("unexpected command variant"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_inspect_pages_json_subcommand() {
+        let cli = Cli::try_parse_from([
+            "tosumu",
+            "inspect",
+            "pages",
+            "--json",
+            "db.tsm",
+        ]).unwrap();
+
+        match cli.command {
+            Command::Inspect {
+                action: InspectAction::Pages { path, json, unlock },
             } => {
                 assert_eq!(path, PathBuf::from("db.tsm"));
                 assert!(json);

@@ -80,6 +80,24 @@ public sealed class PackagedCliTests : IDisposable
     }
 
     [Fact]
+    public async Task PackagedCli_can_read_structured_pages_through_wrapper()
+    {
+        var dbPath = Path.Combine(rootDirectory, "pages-json.tsm");
+
+        (await cli.RunAsync("init", dbPath)).EnsureSuccess();
+        (await cli.RunAsync("put", dbPath, "alpha", "one")).EnsureSuccess();
+
+        var pages = await cli.GetPagesAsync(dbPath);
+
+        Assert.NotEmpty(pages.Pages);
+        Assert.Contains(pages.Pages, page =>
+            page.Pgno == 1
+            && page.PageTypeName == "Leaf"
+            && page.State == "ok"
+            && page.SlotCount >= 1);
+    }
+
+    [Fact]
     public async Task PackagedCli_can_read_structured_page_through_wrapper()
     {
         var dbPath = Path.Combine(rootDirectory, "page-json.tsm");

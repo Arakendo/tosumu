@@ -84,6 +84,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         UpdateHexColumnVisibility();
         ResetHeaderState("Open a database to load the header automatically.");
         ResetVerifyState();
+        ResetPagesState();
         ResetPageState();
         ResetProtectorsState();
         LoadSessionState();
@@ -96,7 +97,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     public ObservableCollection<VerifyIssueRow> VerifyIssues { get; } = [];
 
-    public ObservableCollection<PageVerifyRow> PageResults { get; } = [];
+    public ObservableCollection<PageSummaryRow> PageResults { get; } = [];
 
     public ObservableCollection<PageRecordRow> PageRecords { get; } = [];
 
@@ -240,6 +241,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var header = await LoadHeaderAsync(path);
             if (ShouldAutoLoadTreeWithoutUnlock(header))
             {
+                await LoadPagesAsync(path, unlock: null);
                 await LoadTreeAsync(path, unlock: null);
             }
 
@@ -264,6 +266,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = "Running verification...";
             AddRecentDatabasePath(path);
             var verify = await LoadVerifyAsync(path, unlock);
+            await LoadPagesAsync(path, unlock);
             await LoadTreeAsync(path, unlock);
 
             StatusText = BuildVerifyStatusText(path, verify);
@@ -287,6 +290,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             StatusText = $"Inspecting page {pageNumber}...";
             AddRecentDatabasePath(path);
             await LoadPageAsync(path, pageNumber, unlock);
+            await LoadPagesAsync(path, unlock);
             await LoadTreeAsync(path, unlock);
 
             StatusText = $"Loaded page {pageNumber} from {System.IO.Path.GetFileName(path)}.";
@@ -330,6 +334,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var header = await LoadHeaderAsync(path);
             PageNumberText = header.RootPage.ToString();
             await LoadPageAsync(path, header.RootPage, unlock);
+            await LoadPagesAsync(path, unlock);
             await LoadTreeAsync(path, unlock);
 
             StatusText = $"Loaded root page {header.RootPage} from {System.IO.Path.GetFileName(path)}.";
@@ -352,11 +357,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         await RunUnlockableInspectActionAsync("refresh all panes", unlockSelection, async unlock =>
         {
-            StatusText = "Refreshing header, verify, protectors, and page...";
+            StatusText = "Refreshing header, pages, verify, protectors, and page...";
             AddRecentDatabasePath(path);
 
             await LoadHeaderAsync(path);
             await LoadProtectorsAsync(path);
+            await LoadPagesAsync(path, unlock);
             await LoadVerifyAsync(path, unlock);
             await LoadTreeAsync(path, unlock);
 
@@ -497,28 +503,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void PageResultsListView_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (PageResultsListView.SelectedItem is PageVerifyRow row)
+        if (PageResultsListView.SelectedItem is PageSummaryRow row)
         {
-            SelectPageNumberFromRow(row.Pgno, "page result");
+            SelectPageNumberFromRow(row.Pgno, "pages list");
         }
     }
 
     private async void PageResultsListView_OnKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key != Key.Enter || PageResultsListView.SelectedItem is not PageVerifyRow row)
+        if (e.Key != Key.Enter || PageResultsListView.SelectedItem is not PageSummaryRow row)
         {
             return;
         }
 
-        await InspectSelectedPageFromRowAsync(row.Pgno, "page result");
+        await InspectSelectedPageFromRowAsync(row.Pgno, "pages list");
         e.Handled = true;
     }
 
     private async void PageResultsListView_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (PageResultsListView.SelectedItem is PageVerifyRow row)
+        if (PageResultsListView.SelectedItem is PageSummaryRow row)
         {
-            await InspectSelectedPageFromRowAsync(row.Pgno, "page result");
+            await InspectSelectedPageFromRowAsync(row.Pgno, "pages list");
         }
     }
 
@@ -705,19 +711,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             }
         }
 
-        PageResults.Clear();
-        foreach (var result in verify.PageResults)
-        {
-            var hasIssue = !result.AuthOk || !string.IsNullOrWhiteSpace(result.Issue);
-            PageResults.Add(new PageVerifyRow(
-                result.Pgno.ToString(),
-                result.AuthOk ? "ok" : "fail",
-                result.PageVersion?.ToString() ?? "-",
-                string.IsNullOrWhiteSpace(result.Issue) ? "-" : result.Issue,
-                HasIssue: hasIssue,
-                IsPlaceholder: false));
-        }
-
         if (verify.IssueCount == 0 && verify.Btree.Ok)
         {
             VerificationBadgeText = "Verified clean";
@@ -746,6 +739,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         LogDebug($"Verification completed: pages_checked={verify.PagesChecked}, pages_ok={verify.PagesOk}, issues={verify.IssueCount}, btree_ok={verify.Btree.Ok}.");
 
         return verify;
+    }
+
+    private async Task<TosumuInspectPagesPayload> LoadPagesAsync(string path, TosumuInspectUnlockOptions? unlock)
+    {
+        var pages = await GetCli().GetPagesAsync(path, unlock);
+
+        PageResults.Clear();
+        if (pages.Pages.Count == 0)
+        {
+            PageResults.Add(new PageSummaryRow("-", "-", "-", "-", "No data pages", "The database has no inspectable data pages yet.", HasIssue: false, IsPlaceholder: true));
+        }
+        else
+        {
+            foreach (var page in pages.Pages)
+            {
+                var hasIssue = !string.Equals(page.State, "ok", StringComparison.Ordinal) || !string.IsNullOrWhiteSpace(page.Issue);
+                PageResults.Add(new PageSummaryRow(
+                    page.Pgno.ToString(),
+                    page.PageTypeName ?? "-",
+                    page.PageVersion?.ToString() ?? "-",
+                    page.SlotCount?.ToString() ?? "-",
+                    page.State.Replace('_', ' '),
+                    string.IsNullOrWhiteSpace(page.Issue) ? "-" : page.Issue,
+                    HasIssue: hasIssue,
+                    IsPlaceholder: false));
+            }
+        }
+
+        LogDebug($"Loaded pages list: pages={pages.Pages.Count}.");
+        return pages;
     }
 
     private async Task LoadPageAsync(string path, ulong pageNumber, TosumuInspectUnlockOptions? unlock)
@@ -934,6 +957,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var header = await LoadHeaderAsync(path);
             if (ShouldAutoLoadTreeWithoutUnlock(header))
             {
+                await LoadPagesAsync(path, unlock: null);
                 await LoadTreeAsync(path, unlock: null);
             }
             StatusText = completionStatus;
@@ -952,6 +976,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         VerifyIssueSummaryBrush = Brushes.Transparent;
         ResetHeaderState("Loading header for the selected database...");
         ResetVerifyState();
+        ResetPagesState();
         ResetPageState();
         ResetProtectorsState();
         ResetTreeInspectorState();
@@ -972,8 +997,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         TreeTrustText = "Trust: verify pending.";
         VerifyIssues.Clear();
         VerifyIssues.Add(new VerifyIssueRow("-", "Run verification to surface integrity or auth problems.", HasIssue: false, IsPlaceholder: true));
+    }
+
+    private void ResetPagesState()
+    {
         PageResults.Clear();
-        PageResults.Add(new PageVerifyRow("-", "-", "-", "Run verification to populate per-page auth results.", HasIssue: false, IsPlaceholder: true));
+        PageResults.Add(new PageSummaryRow("-", "-", "-", "-", "pending", "Load header for auth-only databases or run an unlockable inspect action to populate page summaries.", HasIssue: false, IsPlaceholder: true));
     }
 
     private void ResetPageState()
@@ -1818,7 +1847,7 @@ public sealed record HeaderFieldRow(string Label, string Value);
 
 public sealed record VerifyIssueRow(string Pgno, string Description, bool HasIssue, bool IsPlaceholder);
 
-public sealed record PageVerifyRow(string Pgno, string AuthOkLabel, string PageVersionLabel, string Issue, bool HasIssue, bool IsPlaceholder);
+public sealed record PageSummaryRow(string Pgno, string PageTypeName, string PageVersionLabel, string SlotCountLabel, string StateLabel, string Issue, bool HasIssue, bool IsPlaceholder);
 
 public sealed record PageRecordRow(string Kind, string Slot, string RecordType, string KeyPreview, string KeyHex, string ValuePreview, string ValueHex, bool IsPlaceholder);
 
