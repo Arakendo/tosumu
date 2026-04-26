@@ -165,6 +165,10 @@ enum Command {
         #[arg(long)]
         explain: bool,
     },
+    #[command(
+        long_about = "Open the read-only interactive inspection view.\n\nThe viewer shows header, page detail, verify, tree, WAL, and protector panels for an existing database. It never mutates the database.\n\nUse --watch to periodically refresh the current snapshot when the database or WAL changes.",
+        after_help = "Interactive keys:\n  /      filter the page list using page metadata and decoded record text\n  n/N    move to the next or previous filter match\n  :      jump to a page number\n  Tab    switch focus between the page list and the active panel\n  j/k    move within the active pane (arrows also work)\n  PgUp/PgDn, g/G, Home/End navigate faster\n  1-6    switch panels\n  w      toggle watch mode\n  q      quit"
+    )]
     /// Open the read-only interactive inspection view.
     View {
         path: PathBuf,
