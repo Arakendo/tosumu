@@ -87,7 +87,7 @@ Six `cargo fuzz` targets in `fuzz/fuzz_targets/`: page decode, B+ tree ops, WAL 
 
 ## Roadmap
 
-See [`DESIGN.md §12`](DESIGN.md) for the full MVP and stage breakdown. Next milestone is MVP+8 — an interactive TUI viewer (`ratatui` + `crossterm`) for inspecting file header, pages, B+ tree structure, WAL records, and per-keyslot detail on encrypted databases.
+See [`DESIGN.md §12`](DESIGN.md) for the full MVP and stage breakdown. Next milestone is MVP+8 — an interactive TUI viewer (`ratatui` + `crossterm`) for inspecting file header, pages, B+ tree structure, WAL records, and per-keyslot detail on encrypted databases. The Windows WPF harness remains a parallel diagnostic surface for fast inspection and triage; it does not replace the TUI milestone.
 
 ## License
 
@@ -103,5 +103,6 @@ Unless you explicitly state otherwise, any contribution intentionally submitted 
 ## Further reading
 
 - [`DESIGN.md`](DESIGN.md) — the design doc. Source of truth for all decisions.
+- [`INSPECT_API.md`](INSPECT_API.md) — machine-readable inspection contract for the TUI, harness, and future companion tools.
 - [`SECURITY.md`](SECURITY.md) — threat model summary and responsible disclosure.
 - [`REFERENCES.md`](REFERENCES.md) — reference implementations that informed the design.

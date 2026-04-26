@@ -5,12 +5,14 @@
 
 use std::path::{Path, PathBuf};
 use clap::{ArgGroup, Args, Parser, Subcommand};
-use serde::Serialize;
 use tosumu_core::error::TosumuError;
 use tosumu_core::pager::Pager;
 use tosumu_core::page_store::PageStore;
 
+mod inspect_contract;
 mod view;
+
+use inspect_contract::*;
 
 enum UnlockSecret {
     Passphrase(String),
@@ -218,189 +220,6 @@ enum InspectAction {
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(Serialize)]
-struct InspectEnvelope<T> {
-    schema_version: u32,
-    command: &'static str,
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payload: Option<T>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<InspectErrorPayload>,
-}
-
-#[derive(Serialize)]
-struct InspectHeaderPayload {
-    format_version: u16,
-    page_size: u16,
-    min_reader_version: u16,
-    flags: u16,
-    page_count: u64,
-    freelist_head: u64,
-    root_page: u64,
-    wal_checkpoint_lsn: u64,
-    dek_id: u64,
-    keyslot_count: u16,
-    keyslot_region_pages: u16,
-    slot0: InspectKeyslotPayload,
-}
-
-#[derive(Serialize)]
-struct InspectVerifyPayload {
-    pages_checked: u64,
-    pages_ok: u64,
-    issue_count: usize,
-    issues: Vec<InspectVerifyIssuePayload>,
-    page_results: Vec<InspectPageVerifyPayload>,
-    btree: InspectBtreeVerifyPayload,
-}
-
-#[derive(Serialize)]
-struct InspectPagePayload {
-    pgno: u64,
-    page_version: u64,
-    page_type: u8,
-    page_type_name: &'static str,
-    slot_count: u16,
-    free_start: u16,
-    free_end: u16,
-    records: Vec<InspectRecordPayload>,
-}
-
-#[derive(Serialize)]
-struct InspectPagesPayload {
-    pages: Vec<InspectPagesEntryPayload>,
-}
-
-#[derive(Serialize)]
-struct InspectPagesEntryPayload {
-    pgno: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    page_version: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    page_type: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    page_type_name: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    slot_count: Option<u16>,
-    state: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    issue: Option<String>,
-}
-
-#[derive(Serialize)]
-struct InspectWalPayload {
-    wal_exists: bool,
-    wal_path: String,
-    record_count: usize,
-    records: Vec<InspectWalRecordPayload>,
-}
-
-#[derive(Serialize)]
-struct InspectWalRecordPayload {
-    lsn: u64,
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    txn_id: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pgno: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    page_version: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    up_to_lsn: Option<u64>,
-}
-
-#[derive(Serialize)]
-struct InspectTreePayload {
-    root_pgno: u64,
-    root: InspectTreeNodePayload,
-}
-
-#[derive(Serialize)]
-struct InspectTreeNodePayload {
-    pgno: u64,
-    page_version: u64,
-    page_type: u8,
-    page_type_name: &'static str,
-    slot_count: u16,
-    free_start: u16,
-    free_end: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_leaf: Option<u64>,
-    children: Vec<InspectTreeChildPayload>,
-}
-
-#[derive(Serialize)]
-struct InspectTreeChildPayload {
-    relation: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    separator_key_hex: Option<String>,
-    child: Box<InspectTreeNodePayload>,
-}
-
-#[derive(Serialize)]
-struct InspectProtectorsPayload {
-    slot_count: usize,
-    slots: Vec<InspectProtectorSlotPayload>,
-}
-
-#[derive(Serialize)]
-struct InspectRecordPayload {
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    key_hex: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    value_hex: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    slot: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    record_type: Option<u8>,
-}
-
-#[derive(Serialize)]
-struct InspectVerifyIssuePayload {
-    pgno: u64,
-    description: String,
-}
-
-#[derive(Serialize)]
-struct InspectPageVerifyPayload {
-    pgno: u64,
-    page_version: Option<u64>,
-    auth_ok: bool,
-    issue: Option<String>,
-}
-
-#[derive(Serialize)]
-struct InspectProtectorSlotPayload {
-    slot: u16,
-    kind: &'static str,
-    kind_byte: u8,
-}
-
-#[derive(Serialize)]
-struct InspectBtreeVerifyPayload {
-    checked: bool,
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-}
-
-#[derive(Serialize)]
-struct InspectKeyslotPayload {
-    kind: &'static str,
-    kind_byte: u8,
-    version: u8,
-}
-
-#[derive(Serialize)]
-struct InspectErrorPayload {
-    kind: &'static str,
-    message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pgno: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -647,109 +466,10 @@ fn confirm_recovery_key_saved(secret: &str) -> Result<(), TosumuError> {
     confirm_recovery_words(secret, &word3, &word7)
 }
 
-fn render_json<T: Serialize>(value: &T) -> Result<String, TosumuError> {
-    serde_json::to_string_pretty(value)
-        .map_err(|e| TosumuError::Io(std::io::Error::other(e.to_string())))
-}
-
-fn keyslot_kind_name(kind: u8) -> &'static str {
-    match kind {
-        tosumu_core::format::KEYSLOT_KIND_EMPTY => "Empty",
-        tosumu_core::format::KEYSLOT_KIND_SENTINEL => "Sentinel",
-        tosumu_core::format::KEYSLOT_KIND_PASSPHRASE => "Passphrase",
-        tosumu_core::format::KEYSLOT_KIND_RECOVERY_KEY => "RecoveryKey",
-        tosumu_core::format::KEYSLOT_KIND_KEYFILE => "Keyfile",
-        _ => "Unknown",
-    }
-}
-
-fn page_type_name(page_type: u8) -> &'static str {
-    match page_type {
-        tosumu_core::format::PAGE_TYPE_LEAF => "Leaf",
-        tosumu_core::format::PAGE_TYPE_INTERNAL => "Internal",
-        tosumu_core::format::PAGE_TYPE_OVERFLOW => "Overflow",
-        tosumu_core::format::PAGE_TYPE_FREE => "Free",
-        _ => "Unknown",
-    }
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn inspect_error_payload(error: &TosumuError) -> InspectErrorPayload {
-    match error {
-        TosumuError::WrongKey => InspectErrorPayload {
-            kind: "wrong_key",
-            message: error.to_string(),
-            pgno: None,
-        },
-        TosumuError::AuthFailed { pgno } => InspectErrorPayload {
-            kind: "auth_failed",
-            message: error.to_string(),
-            pgno: *pgno,
-        },
-        TosumuError::Corrupt { pgno, .. } => InspectErrorPayload {
-            kind: "corrupt",
-            message: error.to_string(),
-            pgno: Some(*pgno),
-        },
-        TosumuError::InvalidArgument(_) => InspectErrorPayload {
-            kind: "invalid_argument",
-            message: error.to_string(),
-            pgno: None,
-        },
-        TosumuError::FileBusy { .. } => InspectErrorPayload {
-            kind: "file_busy",
-            message: error.to_string(),
-            pgno: None,
-        },
-        TosumuError::NotATosumFile
-        | TosumuError::NewerFormat { .. }
-        | TosumuError::PageSizeMismatch { .. } => InspectErrorPayload {
-            kind: "unsupported",
-            message: error.to_string(),
-            pgno: None,
-        },
-        TosumuError::CorruptRecord { .. }
-        | TosumuError::Io(_)
-        | TosumuError::EncryptFailed
-        | TosumuError::RngFailed
-        | TosumuError::FileTruncated { .. }
-        | TosumuError::Poisoned
-        | TosumuError::OutOfSpace
-        | TosumuError::CommittedButFlushFailed { .. } => InspectErrorPayload {
-            kind: "io",
-            message: error.to_string(),
-            pgno: None,
-        },
-        _ => InspectErrorPayload {
-            kind: "unsupported",
-            message: error.to_string(),
-            pgno: None,
-        },
-    }
-}
-
-fn render_inspect_error_json(command: &'static str, error: &TosumuError) -> String {
-    render_json(&InspectEnvelope::<()> {
-        schema_version: 1,
-        command,
-        ok: false,
-        payload: None,
-        error: Some(inspect_error_payload(error)),
-    }).unwrap_or_else(|serialization_error| {
-        format!(
-            "{{\"schema_version\":1,\"command\":\"{command}\",\"ok\":false,\"error\":{{\"kind\":\"io\",\"message\":{:?}}}}}",
-            serialization_error.to_string()
-        )
-    })
-}
-
 fn cmd_inspect_header_json(path: &Path) -> Result<String, TosumuError> {
     let header = tosumu_core::inspect::read_header_info(path)?;
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.header",
         ok: true,
         payload: Some(InspectHeaderPayload {
@@ -816,7 +536,7 @@ fn collect_verify_snapshot(path: &Path, unlock: Option<UnlockSecret>, no_prompt:
 fn cmd_inspect_verify_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<String, TosumuError> {
     let snapshot = collect_verify_snapshot(path, unlock, no_prompt)?;
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.verify",
         ok: snapshot.report.issues.is_empty() && (!snapshot.btree.checked || snapshot.btree.ok),
         payload: Some(InspectVerifyPayload {
@@ -843,7 +563,7 @@ fn cmd_inspect_page_json(path: &Path, pgno: u64, unlock: Option<UnlockSecret>, n
     let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
     let page = tosumu_core::inspect::inspect_page_from_pager(&pager, pgno)?;
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.page",
         ok: true,
         payload: Some(InspectPagePayload {
@@ -886,7 +606,7 @@ fn cmd_inspect_pages_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: 
     let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
     let pages = tosumu_core::inspect::inspect_pages_from_pager(&pager)?;
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.pages",
         ok: pages.pages.iter().all(|page| matches!(page.state, tosumu_core::inspect::PageInspectState::Ok)),
         payload: Some(InspectPagesPayload {
@@ -947,7 +667,7 @@ fn cmd_inspect_wal_json(path: &Path) -> Result<String, TosumuError> {
     }).collect::<Vec<_>>();
 
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.wal",
         ok: true,
         payload: Some(InspectWalPayload {
@@ -985,7 +705,7 @@ fn cmd_inspect_tree_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: b
     let (pager, _) = open_pager_with_unlock(path, unlock, no_prompt)?;
     let tree = tosumu_core::inspect::inspect_tree_from_pager(&pager)?;
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.tree",
         ok: true,
         payload: Some(InspectTreePayload {
@@ -999,7 +719,7 @@ fn cmd_inspect_tree_json(path: &Path, unlock: Option<UnlockSecret>, no_prompt: b
 fn cmd_inspect_protectors_json(path: &Path) -> Result<String, TosumuError> {
     let slots = PageStore::list_keyslots(path)?;
     render_json(&InspectEnvelope {
-        schema_version: 1,
+        schema_version: INSPECT_SCHEMA_VERSION,
         command: "inspect.protectors",
         ok: true,
         payload: Some(InspectProtectorsPayload {
@@ -1956,6 +1676,104 @@ mod tests {
     }
 
     #[test]
+    fn inspect_pages_json_uses_structured_success_envelope() {
+        let path = temp_path("inspect_pages_json_success");
+        let _ = std::fs::remove_file(&path);
+        let mut store = PageStore::create(&path).unwrap();
+        store.put(b"alpha", b"one").unwrap();
+
+        let rendered = cmd_inspect_pages_json(&path, None, false).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.pages");
+        assert_eq!(json["ok"], true);
+        assert!(json["payload"]["pages"].as_array().unwrap().len() >= 1);
+        assert_eq!(json["payload"]["pages"][0]["pgno"], 1);
+        assert_eq!(json["payload"]["pages"][0]["page_type_name"], "Leaf");
+        assert_eq!(json["payload"]["pages"][0]["state"], "ok");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_wal_json_uses_structured_success_envelope() {
+        let path = temp_path("inspect_wal_json_success");
+        let wal_path = tosumu_core::wal::wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+        PageStore::create(&path).unwrap();
+        let _ = std::fs::remove_file(&wal_path);
+
+        {
+            let mut writer = tosumu_core::wal::WalWriter::create(&wal_path).unwrap();
+            writer.append(&tosumu_core::wal::WalRecord::Begin { txn_id: 9 }).unwrap();
+            writer.append(&tosumu_core::wal::WalRecord::PageWrite {
+                pgno: 1,
+                page_version: 7,
+                frame: Box::new([0u8; tosumu_core::format::PAGE_SIZE]),
+            }).unwrap();
+            writer.append(&tosumu_core::wal::WalRecord::Commit { txn_id: 9 }).unwrap();
+            writer.sync().unwrap();
+        }
+
+        let rendered = cmd_inspect_wal_json(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.wal");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["wal_exists"], true);
+        assert_eq!(json["payload"]["record_count"], 3);
+        assert_eq!(json["payload"]["records"][0]["kind"], "begin");
+        assert_eq!(json["payload"]["records"][0]["txn_id"], 9);
+        assert_eq!(json["payload"]["records"][1]["kind"], "page_write");
+        assert_eq!(json["payload"]["records"][1]["pgno"], 1);
+        assert_eq!(json["payload"]["records"][1]["page_version"], 7);
+        assert_eq!(json["payload"]["records"][2]["kind"], "commit");
+        assert_eq!(json["payload"]["records"][2]["txn_id"], 9);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal_path);
+    }
+
+    #[test]
+    fn inspect_tree_json_uses_structured_success_envelope() {
+        let path = temp_path("inspect_tree_json_success");
+        let _ = std::fs::remove_file(&path);
+
+        let mut store = PageStore::create(&path).unwrap();
+        for i in 0u32..500 {
+            store.put(
+                format!("tree-key-{i:05}").as_bytes(),
+                format!("tree-val-{i:05}").as_bytes(),
+            ).unwrap();
+        }
+        assert!(
+            store.stat().unwrap().tree_height >= 2,
+            "expected test fixture to force a root split"
+        );
+
+        let rendered = cmd_inspect_tree_json(&path, None, false).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.tree");
+        assert_eq!(json["ok"], true);
+        assert!(json["payload"]["root_pgno"].as_u64().unwrap() > 0);
+        assert_eq!(json["payload"]["root"]["page_type_name"], "Internal");
+        assert!(json["payload"]["root"]["children"].as_array().unwrap().len() >= 2);
+        assert_eq!(json["payload"]["root"]["children"][0]["relation"], "leftmost");
+        assert!(json["payload"]["root"]["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|child| child["relation"] == "separator" && child["separator_key_hex"].is_string()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn inspect_protectors_json_uses_structured_success_envelope() {
         let path = temp_path("inspect_protectors_json_success");
         let _ = std::fs::remove_file(&path);
@@ -2011,6 +1829,47 @@ mod tests {
     }
 
     #[test]
+    fn inspect_pages_json_accepts_explicit_passphrase_unlock() {
+        let path = temp_path("inspect_pages_json_passphrase_unlock");
+        let _ = std::fs::remove_file(&path);
+        let mut store = PageStore::create_encrypted(&path, "correct-horse").unwrap();
+        store.put(b"alpha", b"one").unwrap();
+
+        let rendered = cmd_inspect_pages_json(&path, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.pages");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["payload"]["pages"][0]["state"], "ok");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_tree_json_accepts_explicit_passphrase_unlock() {
+        let path = temp_path("inspect_tree_json_passphrase_unlock");
+        let _ = std::fs::remove_file(&path);
+        let mut store = PageStore::create_encrypted(&path, "correct-horse").unwrap();
+        for i in 0u32..100 {
+            store.put(
+                format!("tree-key-{i:05}").as_bytes(),
+                format!("tree-val-{i:05}").as_bytes(),
+            ).unwrap();
+        }
+
+        let rendered = cmd_inspect_tree_json(&path, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.tree");
+        assert_eq!(json["ok"], true);
+        assert!(json["payload"]["root_pgno"].as_u64().unwrap() > 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn inspect_verify_json_no_prompt_returns_wrong_key_for_encrypted_db() {
         let path = temp_path("inspect_verify_json_no_prompt_wrong_key");
         let _ = std::fs::remove_file(&path);
@@ -2019,6 +1878,39 @@ mod tests {
         let err = cmd_inspect_verify_json(&path, None, true).err().unwrap();
 
         assert!(matches!(err, TosumuError::WrongKey));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_tree_json_no_prompt_returns_wrong_key_for_encrypted_db() {
+        let path = temp_path("inspect_tree_json_no_prompt_wrong_key");
+        let _ = std::fs::remove_file(&path);
+        PageStore::create_encrypted(&path, "correct-horse").unwrap();
+
+        let err = cmd_inspect_tree_json(&path, None, true).err().unwrap();
+
+        assert!(matches!(err, TosumuError::WrongKey));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn inspect_tree_wrong_key_uses_structured_error_envelope() {
+        let path = temp_path("inspect_tree_json_wrong_key_envelope");
+        let _ = std::fs::remove_file(&path);
+        PageStore::create_encrypted(&path, "correct-horse").unwrap();
+
+        let err = cmd_inspect_tree_json(&path, None, true).err().unwrap();
+        let rendered = render_inspect_error_json("inspect.tree", &err);
+        let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "inspect.tree");
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["error"]["kind"], "wrong_key");
+        assert_eq!(json["error"]["message"], "wrong passphrase or key — could not unlock any keyslot");
+        assert!(json["payload"].is_null());
 
         let _ = std::fs::remove_file(&path);
     }

@@ -1472,8 +1472,20 @@ enum AuditFinding {
     FreelistHigh         { free_pages: u64, total_pages: u64, pct: u8 },
     WalNotCheckpointed   { wal_pages: u64 },
     TreeHeightSuspicious { table: String, height: u8, estimated_rows: u64 },
+    // Structural-entropy findings (see §12.5):
+    FragmentationHigh    { table: String, fragmentation_ratio: f32 },
+    LowAvgLeafFill       { table: String, avg_leaf_fill: f32 },
+    TombstoneDensityHigh { table: String, tombstone_ratio: f32 },
+    OverflowChainBloat   { table: String, overflow_pages: u64, value_pages: u64 },
+    // Crypto/operational-entropy findings (see §12.5):
+    StaleVerify          { last_verified_at: Option<u64>, age_days: u32 },
+    PagesSinceRekeyHigh  { pages_written: u64, ceiling: u64 },
+    KdfParamsAged        { kdf: &'static str, params_age_days: u32 },
+    RecoveryKeyConsumed  { used_at: u64 },
 }
 ```
+
+The audit also emits a numeric **entropy report** alongside the findings — see §12.5 for the full set of metrics. On the inspect contract this is additive: `inspect.audit` gains a top-level `entropy: { ... }` payload object, leaving every existing field untouched (per [INSPECT_API.md](INSPECT_API.md) compatibility rules).
 
 Index suggestions are advisory — MVP+9 has only the primary-key B+ tree. When MVP+10 ships secondary indexes, `tosumu audit` will automatically promote its suggestions to actionable DDL:
 
@@ -1538,6 +1550,35 @@ Deploy the three-server witness model (§23.4) and local observer model (§23.6)
 **Demo:** Take a volume snapshot of the DB PVC at LSN 800. Let it advance to LSN 950. Restore the snapshot. `tosumu-cli status` reports `RollbackSuspected`; witnesses confirm the disagreement; server refuses writes.
 **Explicitly not there:** no automatic failover, no multi-writer consensus, no Raft. Witnesses are auditors, not replicas.
 
+#### MVP +13 — "Entropy bookkeeping" *(crosscut — see §12.5)*
+
+Make database drift a first-class, monitorable metric. Most of the structural metrics are pure read-side and could ship as soon as MVP +9 audit lands; the crypto and operational fields require additive header bookkeeping and a minor format bump, which is why the slice is its own MVP rather than smuggled into +9.
+
+Delivered in three sub-slices to keep each one tractable:
+
+- **MVP +13a — structural entropy (read-side only).** Compute `freelist_ratio`, `fragmentation_ratio`, `avg_leaf_fill`, `tombstone_ratio`, `tree_height_excess`, `overflow_ratio` from existing on-disk structures. Surface via additive `entropy.structural` block on `inspect.audit`. Promote `AuditFinding::FreelistHigh` and `TreeHeightSuspicious` from placeholders to real threshold checks. No format change.
+- **MVP +13b — operational entropy + header bookkeeping.** Add `last_verified_at`, `pages_written_since_rekey`, `crashes_since_clean_open` to the file header (§5.2). Bump on-disk minor version per §13. `inspect.audit` gains `entropy.operational`. `verify` updates `last_verified_at` on success. Recovery increments `crashes_since_clean_open`; clean shutdown clears it.
+- **MVP +13c — crypto entropy.** Add `kdf_params_set_at` per protector and `recovery_key_consumed_at` per recovery-key protector. Add a startup KAT that exercises the configured AEAD/KDF before any user data is written. Surface via `entropy.crypto` and via new `inspect.protectors` fields. Define `nonce_ceiling` as a hard constant well below 2^32 page-writes per DEK; flag at 50%, refuse at 90% (forces `rekey-dek`).
+
+**Proves:** the engine can describe its own drift — bloat, recovery debt, and crypto-key wear — through the same inspect contract that already exists, and refuses to keep operating past safety ceilings instead of failing surprisingly.
+**Demo:** `tosumu audit db.tsm --json` prints a populated `entropy` block. Run `tosumu put` in a loop with synthetic writes; watch `pages_written_since_rekey` climb and the warning fire at the configured threshold. Run `tosumu rekey-dek`; counter resets to zero.
+**Explicitly not there:** no automatic VACUUM, no automatic rekey, no time-series storage of entropy snapshots, no Prometheus exporter (those are future companion-tool concerns).
+
+#### MVP +14 — "Secondary structures for expensive queries" *(crosscut — see §12.6)*
+
+MVP +10 ships plain single-column secondary B+ trees. That solves OR-across-columns trivially but does nothing for many-OR equality lists, low-cardinality disjunctions, or range+filter queries. MVP +14 adds the cheaper, additive accelerators *before* the expensive ones, and refuses to smuggle in hash/trie/full-text structures that §18 explicitly rules out.
+
+Delivered in four sub-slices, ordered by cost-to-build:
+
+- **MVP +14a — page-level Bloom filters + planner `IN`-rewrite.** Add a small Bloom filter to each B+ tree leaf page header, sized for ~1% FPR at the page's row count. Planner rewrites `WHERE col IN (v1, v2, …)` into N unioned point lookups when an index exists, falling back to a single scan that consults Bloom filters per page when one doesn't. Additive header field, no new index type, mostly read-side. Surface filter size and observed FPR on `inspect.audit`.
+- **MVP +14b — zone maps (per-page min/max).** Per indexed column, store `(min, max)` in the page header. Range scans skip pages whose `[min,max]` doesn't intersect the predicate. Pairs naturally with +14a: same header growth, same scan path. Wins on naturally-clustered columns (timestamps, monotonic IDs); reports zone-map effectiveness on `inspect.audit` (`pages_skipped / pages_considered`).
+- **MVP +14c — composite / covering indexes.** `CREATE INDEX idx ON t(a, b, c)` with optional `INCLUDE (d, e)`. Same B+ tree machinery as MVP +10; the work is in the planner (multi-column key matching, prefix predicates, index-only plans). No new on-disk structure beyond "keys can be tuples."
+- **MVP +14d — bitmap indexes (gated, low-cardinality only).** New index type behind explicit opt-in: `CREATE INDEX idx ON t(status) USING BITMAP`. Roaring-compressed bitmap per distinct value, addressed by row position. Disjunctions become bitmap OR; conjunctions become bitmap AND. Mutation cost is real (one row touches O(distinct_values) bitmaps), so the planner refuses `USING BITMAP` on columns above a configured cardinality ceiling. Requires a stable rowid layer (introduced here, used by future structures).
+
+**Proves:** the engine has a coherent answer for every common "my query is slow" pattern — with the cheap, additive accelerators landing first and the expensive new index type strictly opt-in.
+**Demo:** `WHERE id IN (1,7,42,…,9001)` against a 1M-row table. Pre-+14: N point lookups or full scan. Post-+14a: same N lookups, but page Bloom filters skip ~95% of cold pages on the fallback path. Post-+14d (with `status` bitmap-indexed): `WHERE status IN ('A','B','C')` reads three bitmaps and ANDs/ORs, never touching the heap until row materialisation.
+**Explicitly not there:** no hash indexes, no tries / radix trees, no inverted indexes, no full-text, no fuzzy, no vector indexes — see §18. No automatic index recommendation that *creates* indexes; `tosumu audit` continues to suggest, never act.
+
 #### MVP increment summary table
 
 | MVP | Ships | Proves | Maps to stage | Status |
@@ -1555,6 +1596,8 @@ Deploy the three-server witness model (§23.4) and local observer model (§23.6)
 | +10 | MVCC readers, conditional writes, secondary indexes, `VACUUM` | Concurrency and optimistic write safety | Stage 6 | |
 | +11 | iOS/Android FFI, Keychain/Keystore | Mobile portability | Stage 7 | |
 | +12 | K3s cluster: server + witnesses + observer sidecar | Audit/witness in real deployment | Stage 8 | |
+| +13 | Entropy bookkeeping (structural + operational + crypto) on `inspect.audit`; header gains `last_verified_at`, `pages_written_since_rekey`, `crashes_since_clean_open`, per-protector `kdf_params_set_at`, `recovery_key_consumed_at`; nonce-ceiling enforcement | Database drift is observable and bounded, not silent | Crosscut Stages 2–4 | |
+| +14 | Secondary structures for expensive queries: page Bloom filters + `IN`-rewrite (+14a), zone maps (+14b), composite/covering indexes (+14c), opt-in bitmap indexes for low-cardinality columns (+14d) | Many-OR / range+filter / low-cardinality disjunction queries get sublinear without smuggling in hash/trie/full-text structures | Crosscut Stages 2 / 5 / 6 | |
 
 **How to use this table:**
 
@@ -1624,6 +1667,10 @@ tosumu view <path>
 - Fits the "storage engine autopsy table" aesthetic
 - No accidental frontend team
 
+This does not forbid a separate Windows-only harness from existing earlier as a debugging aid. If such a harness exists, it remains downstream of the same Rust inspection contracts and does not replace `tosumu view` as the cross-platform roadmap surface.
+
+The same harness can also serve as a prototype seam for later companion tools. If `tosumu` eventually grows a richer tooling ecosystem, the rule should stay the same: shared Rust inspection contracts first, multiple UI shells second.
+
 **Stage 4+: Encrypted DB inspection**
 
 Once encryption lands, the viewer becomes a differentiator. Most encrypted storage tools are black boxes or "hex dumps wearing a trench coat." tosumu's viewer shows:
@@ -1657,6 +1704,8 @@ Eventually, a graphical viewer:
 - Or local HTTP server (axum/actix) with browser UI
 - Or Tauri desktop app
 
+This can expand into a broader family of companion tools over time, but those tools should still be treated as shells around the same database-inspection and explainability primitives, not as separate semantics owned by each frontend.
+
 But **not before Stage 6 is complete**. That path leads to "I built a database and accidentally became a frontend team."
 
 **Command naming convention:**
@@ -1689,6 +1738,118 @@ But **not before Stage 6 is complete**. That path leads to "I built a database a
 - No query builder / SQL editor (that's Stage 5's CLI, not the viewer)
 - No connection pooling / multi-database management (single file at a time)
 - No remote connections (local files only, security boundary is clear)
+
+#### 12.5 Database entropy reporting (Stage 2+, additive)
+
+"Entropy" is a useful umbrella for *state that drifts away from a freshly-built database over time*. It hides at least four distinct failure modes, with different signals and different fixes. tosumu measures and surfaces them through the same Rust → JSON → UI shell pipeline as everything else: the engine computes, the inspect contract reports, and TUI / WPF harness / future tooling consume.
+
+**The four kinds of entropy:**
+
+1. **Structural entropy** — bloat. Freelist growth, intra-page fragmentation, tombstone density, B+ tree height drift, fill-factor decay, overflow-page accumulation. All computable from existing on-disk structures with no format change.
+2. **Crypto entropy** — *not* a metaphor. Per-DEK page-write counters approaching nonce-space limits, KDF parameters aging out of current recommendations, RNG self-test at `init`, recovery-key consumption, slot/protector freshness. Some of these need additive header fields.
+3. **Operational entropy** — recovery debt. WAL not checkpointed, time since last successful `verify`, time since last full tree walk, crash count since last clean shutdown, pages whose AEAD has never been re-validated since open.
+4. **Schema/semantic entropy** — tables without indexes, columns with degenerating cardinality, stats older than N writes. Already partially covered by §12 audit findings (`TableNoIndex`, `TableLargeFullScan`); deeper work waits for the SQL layer to mature.
+
+**Metrics surfaced via `inspect.audit` (additive payload):**
+
+```jsonc
+{
+  "entropy": {
+    "structural": {
+      "freelist_ratio":       0.18,   // free_pages / total_pages
+      "fragmentation_ratio":  0.42,   // sum(fragmented_bytes) / sum(used_bytes)
+      "avg_leaf_fill":        0.51,   // mean leaf fill-factor
+      "tombstone_ratio":      0.07,   // tombstones / live_records
+      "tree_height_excess":   1,      // observed_height - ceil(log_fanout(rows))
+      "overflow_ratio":       0.03    // overflow_pages / value_pages
+    },
+    "crypto": {
+      "pages_written_since_rekey": 1248903,
+      "nonce_headroom_ratio":      0.000291, // pages_written / nonce_ceiling
+      "kdf":                       "argon2id",
+      "kdf_params_age_days":       412,
+      "recovery_key_consumed":     false,
+      "protector_count":           3
+    },
+    "operational": {
+      "wal_pages":                 0,
+      "last_verified_at":          1745020800,  // unix seconds, null if never
+      "days_since_verify":         12,
+      "crashes_since_clean_open":  0
+    }
+  }
+}
+```
+
+**Source of truth — Rust, always.** Metrics are computed in `tosumu-core` (or `tosumu-sql` where catalog walks are required) and exposed as fields on `inspect.audit`. The TUI's audit view, the WPF harness's diagnostic panel, and any future companion tool consume the same JSON. UI shells must not invent their own ratios.
+
+**Thresholds belong in config, not code.** A small `EntropyPolicy` struct (defaults shipped, overridable via CLI flags or a future config file) controls which findings escalate from informational to warning. The numeric report is always emitted; the verdict is policy-driven.
+
+**Header bookkeeping fields required (additive, format-bumped):**
+
+- `last_verified_at: u64` — unix seconds of last successful `tosumu verify` that walked every page.
+- `pages_written_since_rekey: u64` — incremented on every page write, reset by `rekey-dek`.
+- `crashes_since_clean_open: u32` — incremented on recovery, cleared on clean shutdown.
+- `kdf_params_set_at: u64` — unix seconds when the current KDF parameters were chosen, per protector.
+- `recovery_key_consumed_at: Option<u64>` — set the first time a recovery-key protector is used to unlock.
+
+All five are additive trailing fields under §13's compatibility rules; older readers ignore them, the on-disk schema bumps by one minor version. Implementation lives in MVP +13.
+
+**Why this matters:**
+
+> A database that can't tell you how far it has drifted from "fresh" is a database that can only fail surprisingly. Entropy reporting makes drift a visible, monitorable metric — the same way `verify` made silent corruption visible.
+
+This section is the design home; the actual delivery is staged through MVP +13 (see §12.0).
+
+#### 12.6 Secondary structures and query acceleration (Stage 2+, additive)
+
+MVP +10 introduces plain single-column secondary B+ trees. That is the *baseline*, not the answer to "my query is slow." This section is the design home for the wider menu of secondary structures tosumu may grow, the cost/space tradeoffs, and the explicit refusals.
+
+**The query patterns we care about:**
+
+| Pattern | Example | What kills it on a single B+ tree |
+|---|---|---|
+| Many-OR equality | `WHERE id IN (1,7,42,…,9001)` | N point lookups, but each is O(log n) |
+| OR across columns | `WHERE email = ? OR phone = ?` | No index on either → full scan |
+| Disjunctive predicates | `WHERE status IN ('A','B','C')` | Low-cardinality column; range may be cheaper than three lookups |
+| Negative predicate | `WHERE status != 'archived'` | Indexes love equality, hate negation |
+| Existence check | `EXISTS (… WHERE tag=?)` | Scans pages whose contents are irrelevant |
+| Range + filter | `WHERE created > X AND status='A'` | Index on one, filter on other → wasted I/O |
+
+**Option space (cost-to-build, ascending):**
+
+| # | Structure | Wins on | Storage cost | Mutation cost | Verdict for tosumu |
+|---|---|---|---|---|---|
+| 1 | Secondary B+ tree (single column) | OR across columns | key + pk per row | low | Baseline — MVP +10. |
+| 2 | Per-page Bloom filter | Many-OR equality, `EXISTS`, scan skipping | ~10 bits/row at 1% FPR | rebuilt on page write | Cheap, additive, big win — MVP +14a. |
+| 3 | Zone map (per-page min/max) | Range + filter on clustered columns | handful of bytes/page/col | trivial | Pairs with Bloom — MVP +14b. |
+| 4 | Composite / covering index | `ORDER BY` + `LIMIT`, prefix predicates, index-only plans | full key duplicated; covering columns duplicated | low | Same B+ machinery, planner work — MVP +14c. |
+| 5 | Bitmap index (Roaring) | Low-cardinality disjunctions, AND across two indexes | <1 bit/row compressed; explodes on high cardinality | high — O(distinct_values) per write | Gated opt-in only — MVP +14d. |
+| 6 | Hash index | Pure equality with huge `IN` lists | ~B+ tree | low | **Out** — B+ point lookup is already fast enough; second index type not justified. |
+| 7 | Trie / radix tree | Prefix scans, autocomplete | data-dependent | medium | **Out** unless prefix queries become a stated workload. |
+| 8 | Inverted index (term → postings) | Multi-term OR, tag containment | ~bitmap | medium | **Out** — §18 defers full-text; tokeniser adds complexity disproportionate to value. |
+
+**Three-layer strategy for "many ORs":**
+
+1. **Planner-level (free).** Rewrite `WHERE col IN (v1, …, vN)` into N unioned point lookups when an index exists. No new structures, no new I/O patterns.
+2. **Page-level (additive).** Bloom filters in page headers so the fallback scan path skips pages that definitely don't contain the values. Cheap, plays well with the existing slotted-page format.
+3. **Column-level (real cost).** Bitmap indexes for explicitly opted-in low-cardinality columns. Only path that turns multi-OR into a single bitmap operation; pays for that with mutation overhead.
+
+Build in that order. Skipping straight to bitmap indexes is how embedded engines accidentally become column stores.
+
+**Source of truth — same rule as everywhere else.** Every new structure exposes its health through additive payload on `inspect.audit`: Bloom filter sizes and observed false-positive rates, zone-map skip ratios, bitmap cardinality and compression ratio, covering-index hit rate. The planner emits which structures it considered and why on `get --explain` (existing) and the SQL `EXPLAIN` (Stage 5+). UI shells — TUI, WPF harness, future tooling — consume the JSON; they do not invent their own metrics.
+
+**Storage / speed tradeoff is policy, not code.** A small `IndexPolicy` controls per-index Bloom FPR target, zone-map enable/disable, bitmap cardinality ceiling. Defaults ship; overrides via `CREATE INDEX … WITH (…)` clauses or a future config file.
+
+**Explicit non-goals (reaffirming §18):**
+
+- No hash indexes — B+ point lookup is fast enough; not worth a second index type.
+- No tries / radix trees — prefix queries aren't a stated workload.
+- No inverted indexes / FSTs / full-text search — §18 defers all of this.
+- No vector / spatial / fuzzy indexes — §18.
+- No automatic index *creation* — `tosumu audit` continues to suggest, never act.
+
+This section is the design home; the actual delivery is staged through MVP +14 (see §12.0).
 
 ### Stage 2 — B+ tree index
 - Internal pages, splits, merges (lazy deletes ok).

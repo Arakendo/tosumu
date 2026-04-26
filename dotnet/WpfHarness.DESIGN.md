@@ -12,16 +12,19 @@ The harness is intended to answer one question:
 
 Short answer: probably yes.
 
+Longer-term, the harness is also a useful proving ground for a broader `tosumu` tooling family: richer inspectors, admin consoles, or SQLDeveloper-style companion tools should learn from the same inspection contracts and UX patterns instead of inventing their own.
+
 ## Status Relative To MVP +8
 
 Current roadmap language in `DESIGN.md` defines MVP +8 as a **TUI viewer**. This proposal does **not** silently change that contract.
 
-Instead, this harness should be treated as one of these two things:
+Instead, this harness should be treated as one of these three things:
 
 1. A **design/prototyping harness** that informs the eventual TUI.
 2. A deliberate future pivot from TUI-first to Windows GUI-first, if we later decide that is the better product surface.
+3. A **committed Windows diagnostic companion** that stays alongside the TUI because it is the fastest way to inspect a broken database when the failure mode is still unclear.
 
-This document assumes option 1 unless we explicitly revise `DESIGN.md`.
+This document now assumes option 3 unless we explicitly revise `DESIGN.md` again.
 
 Implementation note:
 
@@ -37,6 +40,7 @@ Implementation note:
 - Keep Rust as the source of truth for all on-disk interpretation.
 - Avoid native interop / FFI for the first version.
 - Make UX iteration fast enough that layout, navigation, and color decisions can change daily without destabilizing the storage engine.
+- Let the harness act as a prototype seam for future companion tools without forcing the storage engine to absorb UI-specific assumptions.
 
 ## Non-Goals
 
@@ -44,7 +48,7 @@ Implementation note:
 - No database mutation through the harness in the first version.
 - No replacement of Rust verification logic with UI-side logic.
 - No cross-platform guarantee in the first version.
-- No promise that the WPF harness is the final shipped MVP +8 artifact.
+- No claim that the WPF harness replaces the TUI roadmap item.
 
 ## Why This Path Exists
 
@@ -555,14 +559,16 @@ That keeps the harness aligned with the exact packaged artifact it is testing an
 
 ### Risk
 
-The biggest risk is building a compelling Windows harness and then leaving the TUI half-finished. That creates roadmap ambiguity.
+The biggest risk is not the existence of two viewers. The biggest risk is letting them drift into two different inspection contracts or two different mental models of what "healthy" and "broken" mean.
 
-If we do this, we should be honest:
+If we keep both surfaces, the rule needs to be explicit:
 
-- either the harness is a prototyping tool
-- or the roadmap changes
+- Rust inspection contracts remain the source of truth.
+- The TUI remains the cross-platform roadmap surface.
+- The WPF harness remains the fastest Windows diagnostic shell when we need richer triage.
+- Any future companion tool should reuse the same inspection contracts and interaction model rather than creating a third interpretation layer.
 
-It should not be both at once in vague language.
+What must not happen is duplicating semantics or inventing harness-only interpretations of on-disk state.
 
 ## Proposed Milestones
 
@@ -610,9 +616,7 @@ It should not be both at once in vague language.
 
 ## Recommendation
 
-This is a good idea if we treat it as a **UX harness** first, not a stealth replacement for MVP +8.
-
-The right next step is not to build WPF immediately.
+This is a good idea if we treat it as a **committed diagnostic companion** and **UX harness** first, not a stealth replacement for MVP +8.
 
 The right next step is to add the **structured JSON inspection contract** to the Rust CLI.
 
@@ -636,25 +640,28 @@ If implementation starts now, the order should be:
 5. Add one harness-side consumer test using the packaged CLI.
 6. Only then create the first WPF shell view.
 
-This keeps the harness downstream of the API and prevents the UI from inventing assumptions the CLI has not committed to.
+This keeps both the harness and the TUI downstream of the same API and prevents either surface from inventing assumptions the CLI has not committed to.
+
+That same rule should apply if `tosumu` later grows a broader tooling family. The harness is valuable partly because it can prototype higher-level workflows quickly, but only if those workflows can later be expressed against the same Rust-side inspection contract.
 
 ## Decision Record
 
 The following decisions are considered locked for version 1 unless a concrete blocker appears:
 
 1. Windows-only harness.
-2. `net8.0-windows` baseline.
-3. Rust remains out-of-process.
-4. Structured JSON inspection API is mandatory.
-5. Blazor-first harness host is the default starting point.
-6. `WpfBlazorTools` is preferred before the `HelperClient.Wpf` pattern unless a concrete browser-hosting need appears.
-7. `ClassLibrary` reuse happens through local wrapper layers.
-8. Request-per-process is acceptable only until benchmarks say otherwise.
+2. The harness remains a committed Windows diagnostic companion alongside the TUI.
+3. `net8.0-windows` baseline.
+4. Rust remains out-of-process.
+5. Structured JSON inspection API is mandatory.
+6. Blazor-first harness host is the default starting point.
+7. `WpfBlazorTools` is preferred before the `HelperClient.Wpf` pattern unless a concrete browser-hosting need appears.
+8. `ClassLibrary` reuse happens through local wrapper layers.
+9. Request-per-process is acceptable only until benchmarks say otherwise.
 
 ## Open Questions
 
 1. Do we want the harness to stay explicitly Windows-only, or should we expect a future cross-platform shell?
-2. Is the WPF harness meant to prototype the TUI, or to compete with it as the primary inspection UI?
+2. How much feature parity do we want between the WPF harness and the TUI before we call both surfaces "good enough" for routine debugging?
 3. Should secret input use stdin only, or do we want a broader request/response protocol for long-running sessions?
 4. Do we want the viewer to refresh by requerying the CLI every time, or do we want a longer-lived child process session later?
-5. Which borrowed `ClassLibrary` pieces do we reference directly versus internalize locally if the harness stops being throwaway?
+5. Which borrowed `ClassLibrary` pieces do we reference directly versus internalize locally once the harness dependency boundary hardens?
