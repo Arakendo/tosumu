@@ -159,3 +159,75 @@ impl Seek for CrashFile {
 impl Read for CrashFile {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.inner.inner.read(buf) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::OpenOptions;
+    use std::io::Cursor;
+
+    #[test]
+    fn crash_writer_before_write_fails_without_writing_bytes() {
+        let inner = Cursor::new(Vec::<u8>::new());
+        let mut writer = CrashWriter::new(inner, CrashPhase::BeforeWrite);
+
+        let err = writer.write(b"abc").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+
+        let inner = writer.into_inner();
+        assert!(inner.into_inner().is_empty());
+    }
+
+    #[test]
+    fn crash_writer_mid_write_stops_after_requested_byte_count() {
+        let inner = Cursor::new(Vec::<u8>::new());
+        let mut writer = CrashWriter::new(inner, CrashPhase::MidWrite { fail_after_bytes: 3 });
+
+        let written = writer.write(b"abcdef").unwrap();
+        assert_eq!(written, 3);
+
+        let err = writer.write(b"z").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+
+        let inner = writer.into_inner();
+        assert_eq!(inner.into_inner(), b"abc");
+    }
+
+    #[test]
+    fn crash_writer_after_write_fails_on_flush() {
+        let inner = Cursor::new(Vec::<u8>::new());
+        let mut writer = CrashWriter::new(inner, CrashPhase::AfterWrite);
+
+        assert_eq!(writer.write(b"abc").unwrap(), 3);
+        let err = writer.flush().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+
+        let inner = writer.into_inner();
+        assert_eq!(inner.into_inner(), b"abc");
+    }
+
+    #[test]
+    fn crash_file_during_truncate_fails_without_changing_file_length() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(temp.path(), b"abcdef").unwrap();
+
+        let file = OpenOptions::new().read(true).write(true).open(temp.path()).unwrap();
+        let mut crash_file = CrashFile::new(file, CrashPhase::DuringTruncate);
+
+        let err = crash_file.set_len(2).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(std::fs::metadata(temp.path()).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn crash_file_after_write_fails_on_sync_but_preserves_written_bytes() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(temp.path()).unwrap();
+        let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
+
+        assert_eq!(crash_file.write(b"payload").unwrap(), 7);
+        let err = crash_file.sync_data().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(std::fs::read(temp.path()).unwrap(), b"payload");
+    }
+}
