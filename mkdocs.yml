@@ -9,10 +9,27 @@ site_dir: site
 
 theme:
   name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
   features:
     - navigation.sections
     - navigation.top
     - content.code.copy
+  icon:
+    logo: material/database
 
 nav:
   - Home: index.md
@@ -42,6 +59,9 @@ markdown_extensions:
 
 plugins:
   - search
+
+extra_css:
+  - overrides/css/extra.css
 
 extra:
   generator: false
