@@ -3,8 +3,28 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - docs/**
+      - mkdocs.yml
+      - requirements-docs.txt
+      - README.md
+      - DESIGN.md
+      - ERRORS.md
+      - INSPECT_API.md
+      - SECURITY.md
+      - .github/workflows/docs.yml
   pull_request:
     branches: [main]
+    paths-ignore:
+      - docs/**
+      - mkdocs.yml
+      - requirements-docs.txt
+      - README.md
+      - DESIGN.md
+      - ERRORS.md
+      - INSPECT_API.md
+      - SECURITY.md
+      - .github/workflows/docs.yml
 
 env:
   CARGO_TERM_COLOR: always
