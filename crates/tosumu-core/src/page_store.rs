@@ -53,68 +53,100 @@ impl PageStore {
 
     /// Create a new `.tsm` file. Fails if `path` already exists.
     pub fn create(path: &Path) -> Result<Self> {
-        Ok(PageStore { tree: BTree::create(path)? })
+        Ok(PageStore {
+            tree: BTree::create(path)?,
+        })
     }
 
     /// Open an existing `.tsm` file.
     pub fn open(path: &Path) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open(path)? })
+        Ok(PageStore {
+            tree: BTree::open(path)?,
+        })
     }
 
     /// Open an existing `.tsm` file in read-only mode.
     pub fn open_readonly(path: &Path) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_readonly(path)? })
+        Ok(PageStore {
+            tree: BTree::open_readonly(path)?,
+        })
     }
 
     /// Create a new passphrase-protected `.tsm` file.
     pub fn create_encrypted(path: &Path, passphrase: &str) -> Result<Self> {
-        Ok(PageStore { tree: BTree::create_encrypted(path, passphrase)? })
+        Ok(PageStore {
+            tree: BTree::create_encrypted(path, passphrase)?,
+        })
     }
 
     /// Open a passphrase-protected `.tsm` file.
     pub fn open_with_passphrase(path: &Path, passphrase: &str) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_with_passphrase(path, passphrase)? })
+        Ok(PageStore {
+            tree: BTree::open_with_passphrase(path, passphrase)?,
+        })
     }
 
     /// Open a passphrase-protected `.tsm` file in read-only mode.
     pub fn open_with_passphrase_readonly(path: &Path, passphrase: &str) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_with_passphrase_readonly(path, passphrase)? })
+        Ok(PageStore {
+            tree: BTree::open_with_passphrase_readonly(path, passphrase)?,
+        })
     }
 
     /// Open a recovery-key-protected `.tsm` file.
     pub fn open_with_recovery_key(path: &Path, recovery_str: &str) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_with_recovery_key(path, recovery_str)? })
+        Ok(PageStore {
+            tree: BTree::open_with_recovery_key(path, recovery_str)?,
+        })
     }
 
     /// Open a recovery-key-protected `.tsm` file in read-only mode.
     pub fn open_with_recovery_key_readonly(path: &Path, recovery_str: &str) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_with_recovery_key_readonly(path, recovery_str)? })
+        Ok(PageStore {
+            tree: BTree::open_with_recovery_key_readonly(path, recovery_str)?,
+        })
     }
 
     /// Open a keyfile-protected `.tsm` file.
     pub fn open_with_keyfile(path: &Path, keyfile_path: &Path) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_with_keyfile(path, keyfile_path)? })
+        Ok(PageStore {
+            tree: BTree::open_with_keyfile(path, keyfile_path)?,
+        })
     }
 
     /// Open a keyfile-protected `.tsm` file in read-only mode.
     pub fn open_with_keyfile_readonly(path: &Path, keyfile_path: &Path) -> Result<Self> {
-        Ok(PageStore { tree: BTree::open_with_keyfile_readonly(path, keyfile_path)? })
+        Ok(PageStore {
+            tree: BTree::open_with_keyfile_readonly(path, keyfile_path)?,
+        })
     }
 
     // ── Key management ───────────────────────────────────────────────────────
 
     /// Add a passphrase protector. Returns the slot index used.
-    pub fn add_passphrase_protector(path: &Path, unlock_passphrase: &str, new_passphrase: &str) -> Result<u16> {
+    pub fn add_passphrase_protector(
+        path: &Path,
+        unlock_passphrase: &str,
+        new_passphrase: &str,
+    ) -> Result<u16> {
         Pager::add_passphrase_protector(path, unlock_passphrase, new_passphrase)
     }
 
     /// Add a passphrase protector, unlocking the DEK with a recovery key.
-    pub fn add_passphrase_protector_with_recovery_key(path: &Path, recovery_str: &str, new_passphrase: &str) -> Result<u16> {
+    pub fn add_passphrase_protector_with_recovery_key(
+        path: &Path,
+        recovery_str: &str,
+        new_passphrase: &str,
+    ) -> Result<u16> {
         Pager::add_passphrase_protector_with_recovery_key(path, recovery_str, new_passphrase)
     }
 
     /// Add a passphrase protector, unlocking the DEK with a keyfile protector.
-    pub fn add_passphrase_protector_with_keyfile(path: &Path, keyfile_path: &Path, new_passphrase: &str) -> Result<u16> {
+    pub fn add_passphrase_protector_with_keyfile(
+        path: &Path,
+        keyfile_path: &Path,
+        new_passphrase: &str,
+    ) -> Result<u16> {
         Pager::add_passphrase_protector_with_keyfile(path, keyfile_path, new_passphrase)
     }
 
@@ -124,42 +156,76 @@ impl PageStore {
     }
 
     /// Add a recovery-key protector, unlocking the DEK with an existing recovery key.
-    pub fn add_recovery_key_protector_with_recovery_key(path: &Path, recovery_str: &str) -> Result<String> {
+    pub fn add_recovery_key_protector_with_recovery_key(
+        path: &Path,
+        recovery_str: &str,
+    ) -> Result<String> {
         Pager::add_recovery_key_protector_with_recovery_key(path, recovery_str)
     }
 
     /// Add a recovery-key protector, unlocking the DEK with a keyfile protector.
-    pub fn add_recovery_key_protector_with_keyfile(path: &Path, keyfile_path: &Path) -> Result<String> {
+    pub fn add_recovery_key_protector_with_keyfile(
+        path: &Path,
+        keyfile_path: &Path,
+    ) -> Result<String> {
         Pager::add_recovery_key_protector_with_keyfile(path, keyfile_path)
     }
 
     /// Add a recovery-key protector using a caller-supplied recovery string.
-    pub fn add_recovery_key_protector_with_secret(path: &Path, unlock_passphrase: &str, recovery_str: &str) -> Result<()> {
+    pub fn add_recovery_key_protector_with_secret(
+        path: &Path,
+        unlock_passphrase: &str,
+        recovery_str: &str,
+    ) -> Result<()> {
         Pager::add_recovery_key_protector_with_secret(path, unlock_passphrase, recovery_str)
     }
 
     /// Add a recovery-key protector using an existing recovery key and caller-supplied secret.
-    pub fn add_recovery_key_protector_with_recovery_key_and_secret(path: &Path, recovery_str: &str, new_recovery_str: &str) -> Result<()> {
-        Pager::add_recovery_key_protector_with_recovery_key_and_secret(path, recovery_str, new_recovery_str)
+    pub fn add_recovery_key_protector_with_recovery_key_and_secret(
+        path: &Path,
+        recovery_str: &str,
+        new_recovery_str: &str,
+    ) -> Result<()> {
+        Pager::add_recovery_key_protector_with_recovery_key_and_secret(
+            path,
+            recovery_str,
+            new_recovery_str,
+        )
     }
 
     /// Add a recovery-key protector using a keyfile unlock and caller-supplied secret.
-    pub fn add_recovery_key_protector_with_keyfile_and_secret(path: &Path, keyfile_path: &Path, recovery_str: &str) -> Result<()> {
+    pub fn add_recovery_key_protector_with_keyfile_and_secret(
+        path: &Path,
+        keyfile_path: &Path,
+        recovery_str: &str,
+    ) -> Result<()> {
         Pager::add_recovery_key_protector_with_keyfile_and_secret(path, keyfile_path, recovery_str)
     }
 
     /// Add a keyfile protector. Returns the slot index used.
-    pub fn add_keyfile_protector(path: &Path, unlock_passphrase: &str, keyfile_path: &Path) -> Result<u16> {
+    pub fn add_keyfile_protector(
+        path: &Path,
+        unlock_passphrase: &str,
+        keyfile_path: &Path,
+    ) -> Result<u16> {
         Pager::add_keyfile_protector(path, unlock_passphrase, keyfile_path)
     }
 
     /// Add a keyfile protector, unlocking with an existing recovery key.
-    pub fn add_keyfile_protector_with_recovery_key(path: &Path, recovery_str: &str, keyfile_path: &Path) -> Result<u16> {
+    pub fn add_keyfile_protector_with_recovery_key(
+        path: &Path,
+        recovery_str: &str,
+        keyfile_path: &Path,
+    ) -> Result<u16> {
         Pager::add_keyfile_protector_with_recovery_key(path, recovery_str, keyfile_path)
     }
 
     /// Add a keyfile protector, unlocking with another keyfile protector.
-    pub fn add_keyfile_protector_with_keyfile(path: &Path, unlock_keyfile_path: &Path, keyfile_path: &Path) -> Result<u16> {
+    pub fn add_keyfile_protector_with_keyfile(
+        path: &Path,
+        unlock_keyfile_path: &Path,
+        keyfile_path: &Path,
+    ) -> Result<u16> {
         Pager::add_keyfile_protector_with_keyfile(path, unlock_keyfile_path, keyfile_path)
     }
 
@@ -169,27 +235,50 @@ impl PageStore {
     }
 
     /// Remove a keyslot, unlocking the DEK with a recovery key.
-    pub fn remove_keyslot_with_recovery_key(path: &Path, recovery_str: &str, slot_idx: u16) -> Result<()> {
+    pub fn remove_keyslot_with_recovery_key(
+        path: &Path,
+        recovery_str: &str,
+        slot_idx: u16,
+    ) -> Result<()> {
         Pager::remove_keyslot_with_recovery_key(path, recovery_str, slot_idx)
     }
 
     /// Remove a keyslot, unlocking the DEK with a keyfile protector.
-    pub fn remove_keyslot_with_keyfile(path: &Path, keyfile_path: &Path, slot_idx: u16) -> Result<()> {
+    pub fn remove_keyslot_with_keyfile(
+        path: &Path,
+        keyfile_path: &Path,
+        slot_idx: u16,
+    ) -> Result<()> {
         Pager::remove_keyslot_with_keyfile(path, keyfile_path, slot_idx)
     }
 
     /// Rotate the KEK for the Passphrase slot at `slot_idx`.
-    pub fn rekey_kek(path: &Path, slot_idx: u16, old_passphrase: &str, new_passphrase: &str) -> Result<()> {
+    pub fn rekey_kek(
+        path: &Path,
+        slot_idx: u16,
+        old_passphrase: &str,
+        new_passphrase: &str,
+    ) -> Result<()> {
         Pager::rekey_kek(path, slot_idx, old_passphrase, new_passphrase)
     }
 
     /// Rotate a Passphrase slot using a recovery key to unlock the DEK.
-    pub fn rekey_kek_with_recovery_key(path: &Path, slot_idx: u16, recovery_str: &str, new_passphrase: &str) -> Result<()> {
+    pub fn rekey_kek_with_recovery_key(
+        path: &Path,
+        slot_idx: u16,
+        recovery_str: &str,
+        new_passphrase: &str,
+    ) -> Result<()> {
         Pager::rekey_kek_with_recovery_key(path, slot_idx, recovery_str, new_passphrase)
     }
 
     /// Rotate a Passphrase slot using a keyfile protector to unlock the DEK.
-    pub fn rekey_kek_with_keyfile(path: &Path, slot_idx: u16, keyfile_path: &Path, new_passphrase: &str) -> Result<()> {
+    pub fn rekey_kek_with_keyfile(
+        path: &Path,
+        slot_idx: u16,
+        keyfile_path: &Path,
+        new_passphrase: &str,
+    ) -> Result<()> {
         Pager::rekey_kek_with_keyfile(path, slot_idx, keyfile_path, new_passphrase)
     }
 
@@ -323,8 +412,8 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
     use std::fs::OpenOptions;
+    use std::path::PathBuf;
     use tempfile;
 
     fn temp_path(name: &str) -> PathBuf {
@@ -379,10 +468,14 @@ mod tests {
     fn assert_model_matches_store(
         store: &PageStore,
         model: &BTreeMap<Vec<u8>, Vec<u8>>,
-        context: &str)
-    {
+        context: &str,
+    ) {
         store.tree.check_invariants().unwrap();
-        assert_eq!(store.scan().unwrap(), model_scan(model), "model mismatch after {context}");
+        assert_eq!(
+            store.scan().unwrap(),
+            model_scan(model),
+            "model mismatch after {context}"
+        );
     }
 
     #[test]
@@ -426,12 +519,23 @@ mod tests {
 
         let store = PageStore::create(&path).unwrap();
         // Empty store: exactly one data page (the root leaf), height 1.
-        assert_eq!(store.stat().unwrap().data_pages, 1, "expected exactly one data page");
-        assert_eq!(store.tree.tree_height().unwrap(), 1, "expected tree height 1 for empty store");
+        assert_eq!(
+            store.stat().unwrap().data_pages,
+            1,
+            "expected exactly one data page"
+        );
+        assert_eq!(
+            store.tree.tree_height().unwrap(),
+            1,
+            "expected tree height 1 for empty store"
+        );
         // Invariant checker also validates slot array bounds and free_start sanity.
         store.tree.check_invariants().unwrap();
         // No records should be readable.
-        assert!(store.scan().unwrap().is_empty(), "fresh store must scan as empty");
+        assert!(
+            store.scan().unwrap().is_empty(),
+            "fresh store must scan as empty"
+        );
     }
 
     #[test]
@@ -518,11 +622,13 @@ mod tests {
 
         {
             let mut store = PageStore::create(&path).unwrap();
-            store.transaction(|tx| {
-                tx.put(b"a", b"1")?;
-                tx.put(b"b", b"2")?;
-                Ok(())
-            }).unwrap();
+            store
+                .transaction(|tx| {
+                    tx.put(b"a", b"1")?;
+                    tx.put(b"b", b"2")?;
+                    Ok(())
+                })
+                .unwrap();
         }
 
         let store = PageStore::open(&path).unwrap();
@@ -543,10 +649,16 @@ mod tests {
         let mut store = PageStore::create(&path).unwrap();
         let result: Result<()> = store.transaction(|tx| {
             tx.put(b"x", b"lost")?;
-            Err(crate::error::TosumuError::InvalidArgument("deliberate rollback"))
+            Err(crate::error::TosumuError::InvalidArgument(
+                "deliberate rollback",
+            ))
         });
         assert!(result.is_err());
-        assert_eq!(store.get(b"x").unwrap(), None, "rolled-back write must not be visible");
+        assert_eq!(
+            store.get(b"x").unwrap(),
+            None,
+            "rolled-back write must not be visible"
+        );
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&wal);
@@ -562,14 +674,23 @@ mod tests {
         let _ = std::fs::remove_file(&wal);
 
         let mut store = PageStore::create(&path).unwrap();
-        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
 
-        let err = store.transaction_with_crash_file(|tx| {
-            tx.put(b"outer-a", b"1")?;
-            tx.put(b"outer-b", b"2")?;
-            Ok(())
-        }, &mut crash_file).unwrap_err();
+        let err = store
+            .transaction_with_crash_file(
+                |tx| {
+                    tx.put(b"outer-a", b"1")?;
+                    tx.put(b"outer-b", b"2")?;
+                    Ok(())
+                },
+                &mut crash_file,
+            )
+            .unwrap_err();
         assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
 
         drop(store);
@@ -592,17 +713,28 @@ mod tests {
         let _ = std::fs::remove_file(&wal);
 
         let mut store = PageStore::create(&path).unwrap();
-        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         let mut crash_file = CrashFile::new(
             file,
-            CrashPhase::MidWrite { fail_after_bytes: (crate::format::PAGE_SIZE / 2) as u64 },
+            CrashPhase::MidWrite {
+                fail_after_bytes: (crate::format::PAGE_SIZE / 2) as u64,
+            },
         );
 
-        let err = store.transaction_with_crash_file(|tx| {
-            tx.put(b"outer-mid-a", b"1")?;
-            tx.put(b"outer-mid-b", b"2")?;
-            Ok(())
-        }, &mut crash_file).unwrap_err();
+        let err = store
+            .transaction_with_crash_file(
+                |tx| {
+                    tx.put(b"outer-mid-a", b"1")?;
+                    tx.put(b"outer-mid-b", b"2")?;
+                    Ok(())
+                },
+                &mut crash_file,
+            )
+            .unwrap_err();
         assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
 
         drop(store);
@@ -625,18 +757,27 @@ mod tests {
         let _ = std::fs::remove_file(&wal);
 
         let mut store = PageStore::create(&path).unwrap();
-        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
 
-        let err = store.transaction_with_crash_file(|tx| {
-            for i in 0u32..500 {
-                tx.put(
-                    format!("split-key-{i:05}").as_bytes(),
-                    format!("split-val-{i:05}").as_bytes(),
-                )?;
-            }
-            Ok(())
-        }, &mut crash_file).unwrap_err();
+        let err = store
+            .transaction_with_crash_file(
+                |tx| {
+                    for i in 0u32..500 {
+                        tx.put(
+                            format!("split-key-{i:05}").as_bytes(),
+                            format!("split-val-{i:05}").as_bytes(),
+                        )?;
+                    }
+                    Ok(())
+                },
+                &mut crash_file,
+            )
+            .unwrap_err();
         assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
 
         drop(store);
@@ -648,7 +789,9 @@ mod tests {
         );
         for i in 0u32..500 {
             assert_eq!(
-                reopened.get(format!("split-key-{i:05}").as_bytes()).unwrap(),
+                reopened
+                    .get(format!("split-key-{i:05}").as_bytes())
+                    .unwrap(),
                 Some(format!("split-val-{i:05}").into_bytes()),
                 "missing key after recovering split transaction: {i}",
             );
@@ -668,21 +811,32 @@ mod tests {
         let _ = std::fs::remove_file(&wal);
 
         let mut store = PageStore::create(&path).unwrap();
-        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         let mut crash_file = CrashFile::new(
             file,
-            CrashPhase::MidWrite { fail_after_bytes: ((crate::format::PAGE_SIZE * 3) / 2) as u64 },
+            CrashPhase::MidWrite {
+                fail_after_bytes: ((crate::format::PAGE_SIZE * 3) / 2) as u64,
+            },
         );
 
-        let err = store.transaction_with_crash_file(|tx| {
-            for i in 0u32..500 {
-                tx.put(
-                    format!("split-mid-key-{i:05}").as_bytes(),
-                    format!("split-mid-val-{i:05}").as_bytes(),
-                )?;
-            }
-            Ok(())
-        }, &mut crash_file).unwrap_err();
+        let err = store
+            .transaction_with_crash_file(
+                |tx| {
+                    for i in 0u32..500 {
+                        tx.put(
+                            format!("split-mid-key-{i:05}").as_bytes(),
+                            format!("split-mid-val-{i:05}").as_bytes(),
+                        )?;
+                    }
+                    Ok(())
+                },
+                &mut crash_file,
+            )
+            .unwrap_err();
         assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
 
         drop(store);
@@ -694,7 +848,9 @@ mod tests {
         );
         for i in 0u32..500 {
             assert_eq!(
-                reopened.get(format!("split-mid-key-{i:05}").as_bytes()).unwrap(),
+                reopened
+                    .get(format!("split-mid-key-{i:05}").as_bytes())
+                    .unwrap(),
                 Some(format!("split-mid-val-{i:05}").into_bytes()),
                 "missing key after recovering torn split transaction: {i}",
             );
@@ -720,7 +876,10 @@ mod tests {
         }
 
         let before_pages = store.stat().unwrap().data_pages;
-        assert!(before_pages > 1, "expected multiple pages, got {before_pages}");
+        assert!(
+            before_pages > 1,
+            "expected multiple pages, got {before_pages}"
+        );
 
         let store2 = PageStore::open(&path).unwrap();
         for i in 0u32..100 {
@@ -757,7 +916,9 @@ mod tests {
 
         PageStore::create_encrypted(&path, "correct-horse").unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "wrong-horse").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "wrong-horse")
+            .err()
+            .unwrap();
         assert!(
             matches!(err, crate::error::TosumuError::WrongKey),
             "expected WrongKey, got {err:?}"
@@ -797,7 +958,10 @@ mod tests {
         let raw = std::fs::read(&path).unwrap();
         let needle = b"secret_value_123";
         let found = raw.windows(needle.len()).any(|w| w == needle);
-        assert!(!found, "plaintext found in encrypted file — encryption is broken");
+        assert!(
+            !found,
+            "plaintext found in encrypted file — encryption is broken"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -839,7 +1003,10 @@ mod tests {
         // Recovery key must look like XXXXXXXX-XXXXXXXX-XXXXXXXX-XXXXXXXX
         let parts: Vec<&str> = recovery.split('-').collect();
         assert_eq!(parts.len(), 4, "recovery key should have 4 groups");
-        assert!(parts.iter().all(|p| p.len() == 8), "each group should be 8 chars");
+        assert!(
+            parts.iter().all(|p| p.len() == 8),
+            "each group should be 8 chars"
+        );
 
         // Must open with recovery key.
         let store = PageStore::open_with_recovery_key(&path, &recovery).unwrap();
@@ -866,7 +1033,9 @@ mod tests {
 
         let slot = PageStore::add_keyfile_protector(&path, "p", &keyfile).unwrap();
         let slots = PageStore::list_keyslots(&path).unwrap();
-        assert!(slots.iter().any(|&(idx, kind)| idx == slot && kind == KEYSLOT_KIND_KEYFILE));
+        assert!(slots
+            .iter()
+            .any(|&(idx, kind)| idx == slot && kind == KEYSLOT_KIND_KEYFILE));
 
         let store = PageStore::open_with_keyfile(&path, &keyfile).unwrap();
         assert_eq!(store.get(b"secret").unwrap(), Some(b"data".to_vec()));
@@ -884,8 +1053,12 @@ mod tests {
         let _real = PageStore::add_recovery_key_protector(&path, "p").unwrap();
 
         let err = PageStore::open_with_recovery_key(&path, "AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD")
-            .err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "got {err:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -897,7 +1070,9 @@ mod tests {
 
         PageStore::create_encrypted(&path, "only-pass").unwrap();
 
-        let err = PageStore::remove_keyslot(&path, "only-pass", 0).err().unwrap();
+        let err = PageStore::remove_keyslot(&path, "only-pass", 0)
+            .err()
+            .unwrap();
         assert!(
             matches!(err, crate::error::TosumuError::InvalidArgument(_)),
             "expected InvalidArgument, got {err:?}"
@@ -919,8 +1094,13 @@ mod tests {
         let store = PageStore::open_with_passphrase(&path, "orig").unwrap();
         drop(store);
         // Removed pass no longer works.
-        let err = PageStore::open_with_passphrase(&path, "extra").err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
+        let err = PageStore::open_with_passphrase(&path, "extra")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "got {err:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -933,8 +1113,13 @@ mod tests {
         PageStore::create_encrypted(&path, "old-pass").unwrap();
         PageStore::rekey_kek(&path, 0, "old-pass", "new-pass").unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "old-pass").err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "old pass still works: {err:?}");
+        let err = PageStore::open_with_passphrase(&path, "old-pass")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "old pass still works: {err:?}"
+        );
 
         PageStore::open_with_passphrase(&path, "new-pass").unwrap();
 
@@ -963,8 +1148,8 @@ mod tests {
         // Write two databases with different passphrases. Manually copy the
         // wrapped DEK from slot 0 of DB B into slot 0 of DB A. The MAC should
         // now fail on DB A.
-        use std::fs;
         use crate::format::{KEYSLOT_REGION_OFFSET, KS_OFF_WRAPPED_DEK};
+        use std::fs;
 
         let path_a = temp_path("swap_a");
         let path_b = temp_path("swap_b");
@@ -983,9 +1168,14 @@ mod tests {
         fs::write(&path_a, &bytes_a).unwrap();
 
         // Opening with pass-a must fail (MAC or DEK unwrap mismatch).
-        let err = PageStore::open_with_passphrase(&path_a, "pass-a").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path_a, "pass-a")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "expected auth failure, got {err:?}"
         );
 
@@ -1025,9 +1215,14 @@ mod tests {
         raw[OFF_HEADER_MAC] ^= 0x01; // flip one bit in the header MAC
         std::fs::write(&path, &raw).unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
+            matches!(
+                err,
+                crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey
+            ),
             "expected AuthFailed or WrongKey, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1045,9 +1240,14 @@ mod tests {
         raw[KEYSLOT_REGION_OFFSET + KS_OFF_KCV] ^= 0xFF; // corrupt KCV for slot 0
         std::fs::write(&path, &raw).unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "expected WrongKey or AuthFailed, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1065,9 +1265,14 @@ mod tests {
         raw[KEYSLOT_REGION_OFFSET + KS_OFF_WRAPPED_DEK + 5] ^= 0xAB;
         std::fs::write(&path, &raw).unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "expected WrongKey or AuthFailed, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1126,7 +1331,10 @@ mod tests {
 
         let err = PageStore::open(&path).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::NotATosumFile | crate::error::TosumuError::Io(_)),
+            matches!(
+                err,
+                crate::error::TosumuError::NotATosumFile | crate::error::TosumuError::Io(_)
+            ),
             "expected NotATosumFile or Io, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1145,7 +1353,10 @@ mod tests {
     }
 
     fn result_is_err_io_or_not_tosum(e: &crate::error::TosumuError) -> bool {
-        matches!(e, crate::error::TosumuError::NotATosumFile | crate::error::TosumuError::Io(_))
+        matches!(
+            e,
+            crate::error::TosumuError::NotATosumFile | crate::error::TosumuError::Io(_)
+        )
     }
 
     // ── Key management edge cases ─────────────────────────────────────────────
@@ -1163,7 +1374,9 @@ mod tests {
             assert_eq!(slot, i, "slot index should be sequential");
         }
         // 9th add must fail.
-        let err = PageStore::add_passphrase_protector(&path, "p0", "p8").err().unwrap();
+        let err = PageStore::add_passphrase_protector(&path, "p0", "p8")
+            .err()
+            .unwrap();
         assert!(
             matches!(err, crate::error::TosumuError::InvalidArgument(_)),
             "expected InvalidArgument (full), got {err:?}"
@@ -1171,7 +1384,8 @@ mod tests {
         // All 8 original passphrases still work.
         for i in 0..=7u16 {
             let pass = format!("p{i}");
-            PageStore::open_with_passphrase(&path, &pass).expect(&format!("slot {i} passphrase failed"));
+            PageStore::open_with_passphrase(&path, &pass)
+                .expect(&format!("slot {i} passphrase failed"));
         }
 
         let _ = std::fs::remove_file(&path);
@@ -1190,8 +1404,13 @@ mod tests {
         PageStore::rekey_kek(&path, 0, "orig", "new-pass").unwrap();
 
         // Old passphrase must fail.
-        let err = PageStore::open_with_passphrase(&path, "orig").err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "old pass still works: {err:?}");
+        let err = PageStore::open_with_passphrase(&path, "orig")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "old pass still works: {err:?}"
+        );
         // New passphrase works.
         PageStore::open_with_passphrase(&path, "new-pass").unwrap();
         // Recovery key still works.
@@ -1207,8 +1426,13 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         PageStore::create_encrypted(&path, "correct").unwrap();
-        let err = PageStore::rekey_kek(&path, 0, "wrong", "new").err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
+        let err = PageStore::rekey_kek(&path, 0, "wrong", "new")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "got {err:?}"
+        );
 
         // Original passphrase still works after failed rekey.
         PageStore::open_with_passphrase(&path, "correct").unwrap();
@@ -1244,7 +1468,10 @@ mod tests {
         // Slot 99 doesn't exist — should fail without removing anything.
         let err = PageStore::remove_keyslot(&path, "p", 99).err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::InvalidArgument(_) | crate::error::TosumuError::WrongKey),
+            matches!(
+                err,
+                crate::error::TosumuError::InvalidArgument(_) | crate::error::TosumuError::WrongKey
+            ),
             "expected InvalidArgument or WrongKey, got {err:?}"
         );
         // Both slots still work.
@@ -1291,9 +1518,14 @@ mod tests {
         raw[KEYSLOT_REGION_OFFSET + KS_OFF_CREATED_UNIX] ^= 0x01;
         std::fs::write(&path, &raw).unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
+            matches!(
+                err,
+                crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey
+            ),
             "expected auth failure, got {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -1338,13 +1570,25 @@ mod tests {
         store.put(b"\xff\xff\xff", b"all-ff").unwrap();
         store.put(b"\x00", b"single-null").unwrap();
 
-        assert_eq!(store.get(b"\x00abc\x00").unwrap(), Some(b"null-interior".to_vec()));
-        assert_eq!(store.get(b"\xff\xff\xff").unwrap(), Some(b"all-ff".to_vec()));
+        assert_eq!(
+            store.get(b"\x00abc\x00").unwrap(),
+            Some(b"null-interior".to_vec())
+        );
+        assert_eq!(
+            store.get(b"\xff\xff\xff").unwrap(),
+            Some(b"all-ff".to_vec())
+        );
         assert_eq!(store.get(b"\x00").unwrap(), Some(b"single-null".to_vec()));
 
         let store2 = PageStore::open(&path).unwrap();
-        assert_eq!(store2.get(b"\x00abc\x00").unwrap(), Some(b"null-interior".to_vec()));
-        assert_eq!(store2.get(b"\xff\xff\xff").unwrap(), Some(b"all-ff".to_vec()));
+        assert_eq!(
+            store2.get(b"\x00abc\x00").unwrap(),
+            Some(b"null-interior".to_vec())
+        );
+        assert_eq!(
+            store2.get(b"\xff\xff\xff").unwrap(),
+            Some(b"all-ff".to_vec())
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1361,10 +1605,16 @@ mod tests {
 
         let mut store = PageStore::create(&path).unwrap();
         store.put(b"big", &big_val).unwrap();
-        assert_eq!(store.get(b"big").unwrap().as_deref(), Some(big_val.as_slice()));
+        assert_eq!(
+            store.get(b"big").unwrap().as_deref(),
+            Some(big_val.as_slice())
+        );
 
         let store2 = PageStore::open(&path).unwrap();
-        assert_eq!(store2.get(b"big").unwrap().as_deref(), Some(big_val.as_slice()));
+        assert_eq!(
+            store2.get(b"big").unwrap().as_deref(),
+            Some(big_val.as_slice())
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1398,7 +1648,10 @@ mod tests {
         for i in 0u32..50 {
             store.delete(format!("key-{i:04}").as_bytes()).unwrap();
         }
-        assert!(store.scan().unwrap().is_empty(), "scan should be empty after delete-all");
+        assert!(
+            store.scan().unwrap().is_empty(),
+            "scan should be empty after delete-all"
+        );
 
         let store2 = PageStore::open(&path).unwrap();
         assert!(store2.scan().unwrap().is_empty());
@@ -1446,12 +1699,14 @@ mod tests {
 
         {
             let mut store = PageStore::create_encrypted(&path, "txn-pass").unwrap();
-            store.transaction(|s| {
-                s.put(b"a", b"1")?;
-                s.put(b"b", b"2")?;
-                s.put(b"c", b"3")?;
-                Ok(())
-            }).unwrap();
+            store
+                .transaction(|s| {
+                    s.put(b"a", b"1")?;
+                    s.put(b"b", b"2")?;
+                    s.put(b"c", b"3")?;
+                    Ok(())
+                })
+                .unwrap();
         }
 
         let store = PageStore::open_with_passphrase(&path, "txn-pass").unwrap();
@@ -1471,11 +1726,13 @@ mod tests {
 
         {
             let mut store = PageStore::create_encrypted(&path, "txn-put-pass").unwrap();
-            store.transaction(|tx| {
-                tx.put(b"a", b"1")?;
-                tx.put(b"a", b"2")?;
-                Ok(())
-            }).unwrap();
+            store
+                .transaction(|tx| {
+                    tx.put(b"a", b"1")?;
+                    tx.put(b"a", b"2")?;
+                    Ok(())
+                })
+                .unwrap();
             store.put(b"b", b"3").unwrap();
         }
 
@@ -1527,11 +1784,13 @@ mod tests {
                     model.insert(key_a.clone(), value_a.clone());
                     model.insert(key_b.clone(), value_b.clone());
 
-                    store.transaction(|tx| {
-                        tx.put(&key_a, &value_a)?;
-                        tx.put(&key_b, &value_b)?;
-                        Ok(())
-                    }).unwrap();
+                    store
+                        .transaction(|tx| {
+                            tx.put(&key_a, &value_a)?;
+                            tx.put(&key_b, &value_b)?;
+                            Ok(())
+                        })
+                        .unwrap();
                 }
             }
 
@@ -1636,13 +1895,19 @@ mod tests {
         let wdek_off = KEYSLOT_REGION_OFFSET + KS_OFF_WRAPPED_DEK;
         raw_b[wdek_off..wdek_off + 48].copy_from_slice(&raw_a[wdek_off..wdek_off + 48]);
         // Also copy the MAC from A so the MAC check passes.
-        raw_b[OFF_HEADER_MAC..OFF_HEADER_MAC + 32].copy_from_slice(&raw_a[OFF_HEADER_MAC..OFF_HEADER_MAC + 32]);
+        raw_b[OFF_HEADER_MAC..OFF_HEADER_MAC + 32]
+            .copy_from_slice(&raw_a[OFF_HEADER_MAC..OFF_HEADER_MAC + 32]);
         std::fs::write(&path_b, &raw_b).unwrap();
 
         // Opening B with the shared passphrase must fail — MAC was computed over A's keyslot data.
-        let err = PageStore::open_with_passphrase(&path_b, "shared-pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path_b, "shared-pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "cross-DB splice must be rejected, got {err:?}"
         );
 
@@ -1659,7 +1924,12 @@ mod tests {
         {
             let mut store = PageStore::create_encrypted(&path, "stress-pass").unwrap();
             for i in 0..n {
-                store.put(format!("key-{i:06}").as_bytes(), format!("val-{i}").as_bytes()).unwrap();
+                store
+                    .put(
+                        format!("key-{i:06}").as_bytes(),
+                        format!("val-{i}").as_bytes(),
+                    )
+                    .unwrap();
             }
         }
         let store = PageStore::open_with_passphrase(&path, "stress-pass").unwrap();
@@ -1699,7 +1969,10 @@ mod tests {
         PageStore::open_with_passphrase(&path, "old").unwrap();
         // New passphrase must not.
         let err = PageStore::open_with_passphrase(&path, "new").err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "got {err:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -1760,8 +2033,13 @@ mod tests {
 
         // Original works, extra does not.
         PageStore::open_with_passphrase(&path, "main").unwrap();
-        let err = PageStore::open_with_passphrase(&path, "extra").err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
+        let err = PageStore::open_with_passphrase(&path, "extra")
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "got {err:?}"
+        );
 
         // Only 1 slot listed.
         let slots = PageStore::list_keyslots(&path).unwrap();
@@ -1811,7 +2089,8 @@ mod tests {
         let bytes_with_a = fs::read(&path).unwrap();
         let a_wrapped_blob: [u8; 48] = bytes_with_a[KEYSLOT_REGION_OFFSET + KS_OFF_WRAPPED_DEK
             ..KEYSLOT_REGION_OFFSET + KS_OFF_WRAPPED_DEK + 48]
-            .try_into().unwrap();
+            .try_into()
+            .unwrap();
 
         // Add B → slot 1.
         let slot_b = PageStore::add_passphrase_protector(&path, "pass-a", "pass-b").unwrap();
@@ -1841,9 +2120,14 @@ mod tests {
         // C must now fail (KCV or unwrap mismatch), B may still work (different slot).
         // The interesting case: does A's blob accidentally unlock with A's passphrase?
         // It must not — the MAC is now broken.
-        let err = PageStore::open_with_passphrase(&path, "pass-a").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass-a")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "stale blob in reused slot must not unlock: {err:?}"
         );
 
@@ -1867,15 +2151,18 @@ mod tests {
 
             // Remove the round pass (slot != 0, since p0 is in slot 0).
             let slots = PageStore::list_keyslots(&path).unwrap();
-            let round_slot = slots.iter()
+            let round_slot = slots
+                .iter()
                 .find(|&&(idx, kind)| idx != 0 && kind == crate::format::KEYSLOT_KIND_PASSPHRASE)
                 .map(|&(idx, _)| idx)
                 .expect("round slot not found");
             PageStore::remove_keyslot(&path, "p0", round_slot).unwrap();
 
             // new_pass must no longer work.
-            assert!(PageStore::open_with_passphrase(&path, &new_pass).is_err(),
-                "round-{round} pass still works after removal");
+            assert!(
+                PageStore::open_with_passphrase(&path, &new_pass).is_err(),
+                "round-{round} pass still works after removal"
+            );
         }
         // p0 still works after all the churn.
         PageStore::open_with_passphrase(&path, "p0").unwrap();
@@ -1946,9 +2233,14 @@ mod tests {
         raw[KEYSLOT_REGION_OFFSET + KS_OFF_KIND] ^= 0x01;
         std::fs::write(&path, &raw).unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
+            matches!(
+                err,
+                crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey
+            ),
             "kind byte flip must be caught by MAC: {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -2004,9 +2296,14 @@ mod tests {
         raw[KEYSLOT_REGION_OFFSET + KS_OFF_WRAP_NONCE] ^= 0xFF;
         std::fs::write(&path, &raw).unwrap();
 
-        let err = PageStore::open_with_passphrase(&path, "pass").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path, "pass")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "nonce flip must fail: {err:?}"
         );
         let _ = std::fs::remove_file(&path);
@@ -2079,9 +2376,14 @@ mod tests {
 
         // Opening B with shared passphrase must fail — DEK_ID in B's header
         // differs from the DEK_ID baked into A's AEAD ciphertext.
-        let err = PageStore::open_with_passphrase(&path_b, "shared").err().unwrap();
+        let err = PageStore::open_with_passphrase(&path_b, "shared")
+            .err()
+            .unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }),
+            matches!(
+                err,
+                crate::error::TosumuError::WrongKey | crate::error::TosumuError::AuthFailed { .. }
+            ),
             "full slot splice from different DB must be rejected: {err:?}"
         );
 
@@ -2110,8 +2412,13 @@ mod tests {
         std::fs::write(&path, &snapshot).unwrap();
 
         // Recovery key is gone.
-        let err = PageStore::open_with_recovery_key(&path, &recovery).err().unwrap();
-        assert!(matches!(err, crate::error::TosumuError::WrongKey), "got {err:?}");
+        let err = PageStore::open_with_recovery_key(&path, &recovery)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(err, crate::error::TosumuError::WrongKey),
+            "got {err:?}"
+        );
 
         // Main passphrase still works (was in snapshot).
         PageStore::open_with_passphrase(&path, "main").unwrap();
@@ -2160,19 +2467,28 @@ mod tests {
         // Hybrid: take new fixed-header fields (page_count etc.) but keep old keyslot bytes.
         let mut hybrid = new_bytes.clone();
         hybrid[KEYSLOT_REGION_OFFSET..KEYSLOT_REGION_OFFSET + KEYSLOT_SIZE * MAX_KEYSLOTS]
-            .copy_from_slice(&old_bytes[KEYSLOT_REGION_OFFSET..KEYSLOT_REGION_OFFSET + KEYSLOT_SIZE * MAX_KEYSLOTS]);
+            .copy_from_slice(
+                &old_bytes
+                    [KEYSLOT_REGION_OFFSET..KEYSLOT_REGION_OFFSET + KEYSLOT_SIZE * MAX_KEYSLOTS],
+            );
         // Keep new MAC so it's technically "authenticated" — but MAC was computed over new slots.
         // This means the MAC will not match the old slot data → should be caught.
         std::fs::write(&path, &hybrid).unwrap();
 
         let err = PageStore::open_with_passphrase(&path, "p").err().unwrap();
         assert!(
-            matches!(err, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
+            matches!(
+                err,
+                crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey
+            ),
             "hybrid header+keyslot must be rejected by MAC: {err:?}"
         );
         let err2 = PageStore::open_with_passphrase(&path, "p2").err().unwrap();
         assert!(
-            matches!(err2, crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey),
+            matches!(
+                err2,
+                crate::error::TosumuError::AuthFailed { .. } | crate::error::TosumuError::WrongKey
+            ),
             "hybrid must reject new pass too: {err2:?}"
         );
 
@@ -2194,7 +2510,11 @@ mod tests {
             let _ = PageStore::open_with_passphrase(&path, "wrong");
         }
 
-        assert_eq!(std::fs::read(&path).unwrap(), original, "read-only open mutated the file");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "read-only open mutated the file"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2236,7 +2556,11 @@ mod tests {
             let _ = PageStore::rekey_kek(&path, 0, "wrong", "new");
         }
 
-        assert_eq!(std::fs::read(&path).unwrap(), original, "failed rekey mutated the file");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "failed rekey mutated the file"
+        );
         PageStore::open_with_passphrase(&path, "real").unwrap();
         let _ = std::fs::remove_file(&path);
     }
@@ -2252,7 +2576,11 @@ mod tests {
 
         let _ = PageStore::add_passphrase_protector(&path, "wrong", "new");
 
-        assert_eq!(std::fs::read(&path).unwrap(), original, "failed add_protector mutated the file");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "failed add_protector mutated the file"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -2269,7 +2597,11 @@ mod tests {
             let _ = PageStore::open_with_recovery_key(&path, "AAAAAAAA-BBBBBBBB-CCCCCCCC-DDDDDDDD");
         }
 
-        assert_eq!(std::fs::read(&path).unwrap(), original, "failed recovery open mutated the file");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "failed recovery open mutated the file"
+        );
         PageStore::open_with_passphrase(&path, "real").unwrap();
         let _ = std::fs::remove_file(&path);
     }
@@ -2292,8 +2624,13 @@ mod tests {
         }
         let slots = PageStore::list_keyslots(&path).unwrap();
         assert_eq!(slots.len(), 1, "after create");
-        assert_eq!(PageStore::open_with_passphrase(&path, "p0").unwrap()
-            .get(b"marker").unwrap(), Some(b"created".to_vec()));
+        assert_eq!(
+            PageStore::open_with_passphrase(&path, "p0")
+                .unwrap()
+                .get(b"marker")
+                .unwrap(),
+            Some(b"created".to_vec())
+        );
 
         // Step 2: add passphrase.
         let slot1 = PageStore::add_passphrase_protector(&path, "p0", "p1").unwrap();
@@ -2343,10 +2680,12 @@ mod tests {
         let recovery = PageStore::add_recovery_key_protector(&path, "main").unwrap();
         PageStore::remove_keyslot(&path, "main", 0).unwrap();
 
-        let slot = PageStore::add_passphrase_protector_with_recovery_key(&path, &recovery, "p1").unwrap();
+        let slot =
+            PageStore::add_passphrase_protector_with_recovery_key(&path, &recovery, "p1").unwrap();
         PageStore::open_with_passphrase(&path, "p1").unwrap();
 
-        let recovery2 = PageStore::add_recovery_key_protector_with_recovery_key(&path, &recovery).unwrap();
+        let recovery2 =
+            PageStore::add_recovery_key_protector_with_recovery_key(&path, &recovery).unwrap();
         PageStore::open_with_recovery_key(&path, &recovery2).unwrap();
 
         PageStore::rekey_kek_with_recovery_key(&path, slot, &recovery, "p1-new").unwrap();
@@ -2390,10 +2729,17 @@ mod tests {
         let slot = PageStore::add_passphrase_protector_with_keyfile(&path, &keyfile, "p1").unwrap();
         PageStore::open_with_passphrase(&path, "p1").unwrap();
 
-        PageStore::add_recovery_key_protector_with_keyfile_and_secret(&path, &keyfile, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH").unwrap();
-        PageStore::open_with_recovery_key(&path, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH").unwrap();
+        PageStore::add_recovery_key_protector_with_keyfile_and_secret(
+            &path,
+            &keyfile,
+            "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH",
+        )
+        .unwrap();
+        PageStore::open_with_recovery_key(&path, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH")
+            .unwrap();
 
-        let slot2 = PageStore::add_keyfile_protector_with_keyfile(&path, &keyfile, &keyfile2).unwrap();
+        let slot2 =
+            PageStore::add_keyfile_protector_with_keyfile(&path, &keyfile, &keyfile2).unwrap();
         PageStore::open_with_keyfile(&path, &keyfile2).unwrap();
 
         PageStore::rekey_kek_with_keyfile(&path, slot, &keyfile, "p1-new").unwrap();

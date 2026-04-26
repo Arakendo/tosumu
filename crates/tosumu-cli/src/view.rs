@@ -3,13 +3,15 @@ use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use tosumu_core::error::TosumuError;
 use tosumu_core::inspect::{inspect_tree_from_pager, inspect_wal, read_header_info, verify_pager};
-use tosumu_core::pager::Pager;
 use tosumu_core::page_store::PageStore;
+use tosumu_core::pager::Pager;
 
 use crate::error_boundary::CliError;
 use crate::unlock::{open_pager, open_pager_with_unlock, UnlockSecret};
@@ -48,7 +50,9 @@ pub fn run(path: &Path, watch: bool) -> Result<(), CliError> {
     if let Err(error) = disable_raw_mode().map_err(TosumuError::Io) {
         restore_error = Some(error);
     }
-    if let Err(error) = execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(TosumuError::Io) {
+    if let Err(error) =
+        execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(TosumuError::Io)
+    {
         restore_error = restore_error.or(Some(error));
     }
     if let Err(error) = terminal.show_cursor().map_err(TosumuError::Io) {
@@ -70,7 +74,9 @@ fn run_loop(
     app: &mut ViewApp,
 ) -> Result<(), CliError> {
     loop {
-        terminal.draw(|frame| draw(frame, app)).map_err(TosumuError::Io)?;
+        terminal
+            .draw(|frame| draw(frame, app))
+            .map_err(TosumuError::Io)?;
 
         if !event::poll(Duration::from_millis(200)).map_err(TosumuError::Io)? {
             if app.should_refresh() {
@@ -139,7 +145,9 @@ fn run_loop(
 }
 
 fn refresh_view(path: &Path, pager: &mut Pager, unlock: &Option<UnlockSecret>, app: &mut ViewApp) {
-    let selected_pgno = app.selected.and_then(|index| app.pages.get(index).map(|page| page.pgno));
+    let selected_pgno = app
+        .selected
+        .and_then(|index| app.pages.get(index).map(|page| page.pgno));
 
     match refresh_view_result(path, pager, unlock, app, selected_pgno) {
         Ok(()) => app.status_message = Some("refreshed".to_string()),

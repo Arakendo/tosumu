@@ -1,8 +1,6 @@
 use super::*;
 use crate::commands::protector::{
-    confirm_recovery_words,
-    format_recovery_key_for_display,
-    recovery_words,
+    confirm_recovery_words, format_recovery_key_for_display, recovery_words,
 };
 use crate::commands::store::run_get;
 use crate::commands::text::cmd_backup;
@@ -14,9 +12,10 @@ use tosumu_core::error::TosumuError;
 fn recovery_words_rechunk_into_eight_groups_of_four() {
     let secret = "ABCDEFGH-IJKLMNOP-QRSTUVWX-YZ234567";
     let words = recovery_words(secret);
-    assert_eq!(words, vec![
-        "ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX", "YZ23", "4567",
-    ]);
+    assert_eq!(
+        words,
+        vec!["ABCD", "EFGH", "IJKL", "MNOP", "QRST", "UVWX", "YZ23", "4567",]
+    );
 }
 
 #[test]
@@ -53,16 +52,13 @@ fn recovery_confirmation_rejects_malformed_secret_as_cli_argument_invalid() {
 
 #[test]
 fn cli_parses_add_keyfile_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "protector",
-        "add-keyfile",
-        "db.tsm",
-        "db.key",
-    ]).unwrap();
+    let cli =
+        Cli::try_parse_from(["tosumu", "protector", "add-keyfile", "db.tsm", "db.key"]).unwrap();
 
     match cli.command {
-        Command::Protector { action: ProtectorAction::AddKeyfile { path, keyfile } } => {
+        Command::Protector {
+            action: ProtectorAction::AddKeyfile { path, keyfile },
+        } => {
             assert_eq!(path, PathBuf::from("db.tsm"));
             assert_eq!(keyfile, PathBuf::from("db.key"));
         }
@@ -72,15 +68,12 @@ fn cli_parses_add_keyfile_subcommand() {
 
 #[test]
 fn cli_parses_add_recovery_key_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "protector",
-        "add-recovery-key",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "protector", "add-recovery-key", "db.tsm"]).unwrap();
 
     match cli.command {
-        Command::Protector { action: ProtectorAction::AddRecoveryKey { path } } => {
+        Command::Protector {
+            action: ProtectorAction::AddRecoveryKey { path },
+        } => {
             assert_eq!(path, PathBuf::from("db.tsm"));
         }
         _ => panic!("unexpected command variant"),
@@ -89,13 +82,7 @@ fn cli_parses_add_recovery_key_subcommand() {
 
 #[test]
 fn cli_parses_inspect_header_json_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "inspect",
-        "header",
-        "--json",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "inspect", "header", "--json", "db.tsm"]).unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -124,13 +111,7 @@ fn cli_rejects_inspect_schema_version_flag() {
 
 #[test]
 fn cli_parses_inspect_verify_json_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "inspect",
-        "verify",
-        "--json",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "inspect", "verify", "--json", "db.tsm"]).unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -147,13 +128,7 @@ fn cli_parses_inspect_verify_json_subcommand() {
 
 #[test]
 fn cli_parses_inspect_pages_json_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "inspect",
-        "pages",
-        "--json",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "inspect", "pages", "--json", "db.tsm"]).unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -170,13 +145,7 @@ fn cli_parses_inspect_pages_json_subcommand() {
 
 #[test]
 fn cli_parses_inspect_wal_json_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "inspect",
-        "wal",
-        "--json",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "inspect", "wal", "--json", "db.tsm"]).unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -192,18 +161,19 @@ fn cli_parses_inspect_wal_json_subcommand() {
 #[test]
 fn cli_parses_inspect_page_json_subcommand() {
     let cli = Cli::try_parse_from([
-        "tosumu",
-        "inspect",
-        "page",
-        "--page",
-        "1",
-        "--json",
-        "db.tsm",
-    ]).unwrap();
+        "tosumu", "inspect", "page", "--page", "1", "--json", "db.tsm",
+    ])
+    .unwrap();
 
     match cli.command {
         Command::Inspect {
-            action: InspectAction::Page { path, page, json, unlock },
+            action:
+                InspectAction::Page {
+                    path,
+                    page,
+                    json,
+                    unlock,
+                },
         } => {
             assert_eq!(path, PathBuf::from("db.tsm"));
             assert_eq!(page, 1);
@@ -217,13 +187,7 @@ fn cli_parses_inspect_page_json_subcommand() {
 
 #[test]
 fn cli_parses_inspect_protectors_json_subcommand() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "inspect",
-        "protectors",
-        "--json",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "inspect", "protectors", "--json", "db.tsm"]).unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -238,12 +202,7 @@ fn cli_parses_inspect_protectors_json_subcommand() {
 
 #[test]
 fn cli_parses_view_watch_flag() {
-    let cli = Cli::try_parse_from([
-        "tosumu",
-        "view",
-        "--watch",
-        "db.tsm",
-    ]).unwrap();
+    let cli = Cli::try_parse_from(["tosumu", "view", "--watch", "db.tsm"]).unwrap();
 
     match cli.command {
         Command::View { path, watch } => {
@@ -279,7 +238,8 @@ fn cli_parses_inspect_verify_with_stdin_passphrase() {
         "--json",
         "--stdin-passphrase",
         "db.tsm",
-    ]).unwrap();
+    ])
+    .unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -305,7 +265,8 @@ fn cli_parses_inspect_verify_with_no_prompt() {
         "--json",
         "--no-prompt",
         "db.tsm",
-    ]).unwrap();
+    ])
+    .unwrap();
 
     match cli.command {
         Command::Inspect {
@@ -341,7 +302,10 @@ fn cli_exit_code_maps_cli_argument_invalid_to_two() {
 
 #[test]
 fn cli_exit_code_maps_wrong_key_to_permission_denied() {
-    assert_eq!(exit_code_for_error(&CliError::from(TosumuError::WrongKey)), 5);
+    assert_eq!(
+        exit_code_for_error(&CliError::from(TosumuError::WrongKey)),
+        5
+    );
 }
 
 #[test]
@@ -366,7 +330,10 @@ fn cli_error_render_includes_stable_error_code() {
 #[test]
 fn cli_error_render_uses_argument_invalid_code() {
     let rendered = render_cli_error(&CliError::from(TosumuError::InvalidArgument("bad flag")));
-    assert_eq!(rendered, "error [ARGUMENT_INVALID]: invalid argument: bad flag");
+    assert_eq!(
+        rendered,
+        "error [ARGUMENT_INVALID]: invalid argument: bad flag"
+    );
 }
 
 #[test]
@@ -375,12 +342,16 @@ fn cli_error_render_uses_cli_argument_invalid_for_empty_stdin_secret() {
         "stdin_passphrase",
         "passphrase",
     ));
-    assert_eq!(rendered, "error [CLI_ARGUMENT_INVALID]: stdin passphrase must not be empty");
+    assert_eq!(
+        rendered,
+        "error [CLI_ARGUMENT_INVALID]: stdin passphrase must not be empty"
+    );
 }
 
 #[test]
 fn cli_error_report_uses_cli_argument_invalid_code_for_empty_stdin_secret() {
-    let report = CliError::inspect_stdin_secret_empty("stdin_passphrase", "passphrase").error_report();
+    let report =
+        CliError::inspect_stdin_secret_empty("stdin_passphrase", "passphrase").error_report();
     assert_eq!(report.code, cli_codes::CLI_ARGUMENT_INVALID);
     assert_eq!(report.status.as_str(), "invalid_input");
     assert_eq!(report.message, "stdin passphrase must not be empty");
@@ -401,7 +372,10 @@ fn cli_error_report_uses_cli_argument_invalid_for_backup_destination_exists() {
     let report = err.error_report();
 
     assert_eq!(report.code, cli_codes::CLI_ARGUMENT_INVALID);
-    assert_eq!(report.message, "backup destination already exists; choose a new path");
+    assert_eq!(
+        report.message,
+        "backup destination already exists; choose a new path"
+    );
 
     let _ = std::fs::remove_file(&src);
     let _ = std::fs::remove_file(&dest);
@@ -419,12 +393,18 @@ fn cli_error_report_uses_cli_argument_invalid_for_empty_keyfile_path() {
 fn cli_error_render_uses_cli_argument_invalid_for_passphrase_mismatch() {
     let rendered = render_cli_error(&CliError::passphrases_do_not_match());
 
-    assert_eq!(rendered, "error [CLI_ARGUMENT_INVALID]: passphrases do not match");
+    assert_eq!(
+        rendered,
+        "error [CLI_ARGUMENT_INVALID]: passphrases do not match"
+    );
 }
 
 #[test]
 fn cli_exit_code_maps_passphrase_mismatch_to_two() {
-    assert_eq!(exit_code_for_error(&CliError::passphrases_do_not_match()), 2);
+    assert_eq!(
+        exit_code_for_error(&CliError::passphrases_do_not_match()),
+        2
+    );
 }
 
 #[test]

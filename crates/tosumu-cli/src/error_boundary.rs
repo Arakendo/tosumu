@@ -212,7 +212,11 @@ mod tests {
         assert_eq!(documented, PUBLIC_CODES);
     }
 
-    fn extract_marked_code_block<'a>(document: &'a str, start_marker: &str, end_marker: &str) -> Vec<&'a str> {
+    fn extract_marked_code_block<'a>(
+        document: &'a str,
+        start_marker: &str,
+        end_marker: &str,
+    ) -> Vec<&'a str> {
         let after_start = document
             .split_once(start_marker)
             .unwrap_or_else(|| panic!("missing start marker {start_marker}"))

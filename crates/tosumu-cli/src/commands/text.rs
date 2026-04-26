@@ -12,11 +12,16 @@ pub(crate) enum VerifyCommandOutcome {
     IssuesFound,
 }
 
-pub(crate) fn cmd_dump(path: &Path, page: Option<u64>, unlock: Option<UnlockSecret>, no_prompt: bool) -> Result<(), CliError> {
+pub(crate) fn cmd_dump(
+    path: &Path,
+    page: Option<u64>,
+    unlock: Option<UnlockSecret>,
+    no_prompt: bool,
+) -> Result<(), CliError> {
     use tosumu_core::format::{
         KEYSLOT_KIND_EMPTY, KEYSLOT_KIND_KEYFILE, KEYSLOT_KIND_PASSPHRASE,
-        KEYSLOT_KIND_RECOVERY_KEY, KEYSLOT_KIND_SENTINEL, PAGE_TYPE_FREE,
-        PAGE_TYPE_INTERNAL, PAGE_TYPE_LEAF, PAGE_TYPE_OVERFLOW,
+        KEYSLOT_KIND_RECOVERY_KEY, KEYSLOT_KIND_SENTINEL, PAGE_TYPE_FREE, PAGE_TYPE_INTERNAL,
+        PAGE_TYPE_LEAF, PAGE_TYPE_OVERFLOW,
     };
     use tosumu_core::inspect::{inspect_page_from_pager, read_header_info, RecordInfo};
 
@@ -29,7 +34,11 @@ pub(crate) fn cmd_dump(path: &Path, page: Option<u64>, unlock: Option<UnlockSecr
             println!("min_reader_version:   {}", h.min_reader_version);
             println!("page_size:            {}", h.page_size);
             let fl = h.flags;
-            println!("flags:                {fl:#06x}  [reserved={}  has_keyslots={}]", fl & 1, (fl >> 1) & 1);
+            println!(
+                "flags:                {fl:#06x}  [reserved={}  has_keyslots={}]",
+                fl & 1,
+                (fl >> 1) & 1
+            );
             let fl_note = if h.freelist_head == 0 { "  (none)" } else { "" };
             let rp_note = if h.root_page == 0 { "  (none)" } else { "" };
             println!("page_count:           {}", h.page_count);
@@ -50,7 +59,9 @@ pub(crate) fn cmd_dump(path: &Path, page: Option<u64>, unlock: Option<UnlockSecr
                 _ => "Unknown",
             };
             let kind_note = match h.ks0_kind {
-                KEYSLOT_KIND_SENTINEL => "  (plaintext DEK — authentication only, no confidentiality)",
+                KEYSLOT_KIND_SENTINEL => {
+                    "  (plaintext DEK — authentication only, no confidentiality)"
+                }
                 KEYSLOT_KIND_PASSPHRASE => "  (Argon2id KDF — authentication + confidentiality)",
                 KEYSLOT_KIND_RECOVERY_KEY => "  (Base32 recovery secret → HKDF-derived KEK)",
                 KEYSLOT_KIND_KEYFILE => "  (raw 32-byte KEK loaded from a file)",
@@ -82,7 +93,11 @@ pub(crate) fn cmd_dump(path: &Path, page: Option<u64>, unlock: Option<UnlockSecr
             for (i, rec) in s.records.iter().enumerate() {
                 match rec {
                     RecordInfo::Live { key, value } => {
-                        println!("  slot {i:3}  Live       key={}  value={}", fmt_bytes(key), fmt_bytes(value));
+                        println!(
+                            "  slot {i:3}  Live       key={}  value={}",
+                            fmt_bytes(key),
+                            fmt_bytes(value)
+                        );
                     }
                     RecordInfo::Tombstone { key } => {
                         println!("  slot {i:3}  Tombstone  key={}", fmt_bytes(key));
@@ -98,11 +113,16 @@ pub(crate) fn cmd_dump(path: &Path, page: Option<u64>, unlock: Option<UnlockSecr
 }
 
 pub(crate) fn cmd_hex(path: &Path, pgno: u64) -> tosumu_core::error::Result<()> {
-    use tosumu_core::format::{CIPHERTEXT_OFFSET, NONCE_SIZE, PAGE_SIZE, PAGE_VERSION_SIZE, TAG_SIZE};
+    use tosumu_core::format::{
+        CIPHERTEXT_OFFSET, NONCE_SIZE, PAGE_SIZE, PAGE_VERSION_SIZE, TAG_SIZE,
+    };
     use tosumu_core::inspect::read_raw_frame;
 
     let frame = read_raw_frame(path, pgno)?;
-    println!("=== raw frame: page {pgno}  {}  ({PAGE_SIZE} bytes) ===", path.display());
+    println!(
+        "=== raw frame: page {pgno}  {}  ({PAGE_SIZE} bytes) ===",
+        path.display()
+    );
     println!();
 
     print_hex_section("nonce · 12 bytes · offset 0x0000", &frame[..NONCE_SIZE], 0);
@@ -112,7 +132,11 @@ pub(crate) fn cmd_hex(path: &Path, pgno: u64) -> tosumu_core::error::Result<()> 
 
     let ct_len = PAGE_SIZE - CIPHERTEXT_OFFSET - TAG_SIZE;
     let ct_label = format!("ciphertext · {ct_len} bytes · offset 0x{CIPHERTEXT_OFFSET:04x}");
-    print_hex_section(&ct_label, &frame[CIPHERTEXT_OFFSET..PAGE_SIZE - TAG_SIZE], CIPHERTEXT_OFFSET);
+    print_hex_section(
+        &ct_label,
+        &frame[CIPHERTEXT_OFFSET..PAGE_SIZE - TAG_SIZE],
+        CIPHERTEXT_OFFSET,
+    );
 
     let tag_off = PAGE_SIZE - TAG_SIZE;
     let tag_label = format!("auth tag (Poly1305) · {TAG_SIZE} bytes · offset 0x{tag_off:04x}");
@@ -133,7 +157,11 @@ pub(crate) fn cmd_verify(
     }
     let report = snapshot.report;
     let outcome = verify_command_outcome(report.issues.len(), &snapshot.btree);
-    println!("verifying {} ({} data pages) ...", path.display(), report.pages_checked);
+    println!(
+        "verifying {} ({} data pages) ...",
+        path.display(),
+        report.pages_checked
+    );
 
     if explain {
         println!();
@@ -148,7 +176,10 @@ pub(crate) fn cmd_verify(
                 let reason = r.issue.as_deref().unwrap_or("unknown");
                 println!("  integrity:   FAIL   — {reason}");
                 println!("  freshness:   N/A");
-                println!("  epistemic:   FAIL   — cannot verify page {} is what was written", r.pgno);
+                println!(
+                    "  epistemic:   FAIL   — cannot verify page {} is what was written",
+                    r.pgno
+                );
             }
             println!();
         }
@@ -161,7 +192,9 @@ pub(crate) fn cmd_verify(
     if report.issues.is_empty() {
         if snapshot.btree.checked && snapshot.btree.ok {
             if explain {
-                println!("  btree:       OK     — keys sorted, routing correct, leaf chain ordered");
+                println!(
+                    "  btree:       OK     — keys sorted, routing correct, leaf chain ordered"
+                );
             }
         } else if let Some(message) = &snapshot.btree.message {
             if snapshot.btree.checked {
@@ -174,15 +207,28 @@ pub(crate) fn cmd_verify(
         println!("all pages ok: {}/{}", report.pages_ok, report.pages_checked);
     } else {
         if !explain {
-            eprintln!("FAILED: {}/{} pages ok, {} issue(s)", report.pages_ok, report.pages_checked, report.issues.len());
+            eprintln!(
+                "FAILED: {}/{} pages ok, {} issue(s)",
+                report.pages_ok,
+                report.pages_checked,
+                report.issues.len()
+            );
         } else {
-            println!("FAILED: {}/{} pages ok, {} issue(s)", report.pages_ok, report.pages_checked, report.issues.len());
+            println!(
+                "FAILED: {}/{} pages ok, {} issue(s)",
+                report.pages_ok,
+                report.pages_checked,
+                report.issues.len()
+            );
         }
     }
     Ok(outcome)
 }
 
-fn verify_command_outcome(issue_count: usize, btree: &InspectBtreeVerifyPayload) -> VerifyCommandOutcome {
+fn verify_command_outcome(
+    issue_count: usize,
+    btree: &InspectBtreeVerifyPayload,
+) -> VerifyCommandOutcome {
     if issue_count > 0 || (btree.checked && !btree.ok) {
         VerifyCommandOutcome::IssuesFound
     } else {
@@ -230,7 +276,8 @@ pub(crate) fn cmd_backup(src: &Path, dest: &Path) -> Result<(), CliError> {
             e
         })?;
 
-        let wal_matches = copied_wal_a == copied_wal_b && (!copied_wal_a || files_equal(&staged_wal, &probe_wal).map_err(TosumuError::Io)?);
+        let wal_matches = copied_wal_a == copied_wal_b
+            && (!copied_wal_a || files_equal(&staged_wal, &probe_wal).map_err(TosumuError::Io)?);
         let main_matches = files_equal(&staged_main, &probe_main).map_err(|e| {
             cleanup_backup_temp(&staged_main, &staged_wal);
             cleanup_backup_temp(&probe_main, &probe_wal);
@@ -335,7 +382,11 @@ fn fmt_bytes(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(text) => format!("{text:?}"),
         Err(_) => {
-            let hex: String = bytes.iter().take(48).map(|byte| format!("{byte:02x}")).collect();
+            let hex: String = bytes
+                .iter()
+                .take(48)
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
             if bytes.len() > 48 {
                 format!("0x{hex}…")
             } else {
@@ -352,7 +403,13 @@ fn print_hex_section(label: &str, data: &[u8], base_offset: usize) {
         let hex_col: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
         let ascii: String = chunk
             .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
+            .map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    '.'
+                }
+            })
             .collect();
         println!("{offset:04x}: {:<47}  |{ascii}|", hex_col.join(" "));
     }

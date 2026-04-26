@@ -22,13 +22,19 @@ pub(crate) fn format_recovery_key_for_display(secret: &str) -> String {
     recovery_words(secret).join("-")
 }
 
-pub(crate) fn confirm_recovery_words(secret: &str, word3: &str, word7: &str) -> Result<(), CliError> {
+pub(crate) fn confirm_recovery_words(
+    secret: &str,
+    word3: &str,
+    word7: &str,
+) -> Result<(), CliError> {
     let words = recovery_words(secret);
     if words.len() < 7 {
         return Err(CliError::recovery_key_format_invalid());
     }
 
-    if word3.trim().to_ascii_uppercase() != words[2] || word7.trim().to_ascii_uppercase() != words[6] {
+    if word3.trim().to_ascii_uppercase() != words[2]
+        || word7.trim().to_ascii_uppercase() != words[6]
+    {
         return Err(CliError::recovery_key_confirmation_failed());
     }
 
@@ -75,11 +81,17 @@ pub(crate) fn run_protector_action(action: ProtectorAction) -> Result<(), CliErr
                 Ok(()) => {}
                 Err(TosumuError::WrongKey) => {
                     let recovery = prompt_passphrase("recovery key: ")?;
-                    match PageStore::add_recovery_key_protector_with_recovery_key_and_secret(&path, &recovery, &key) {
+                    match PageStore::add_recovery_key_protector_with_recovery_key_and_secret(
+                        &path, &recovery, &key,
+                    ) {
                         Ok(()) => {}
                         Err(TosumuError::WrongKey) => {
                             let current_keyfile = prompt_keyfile_path("current keyfile path: ")?;
-                            PageStore::add_recovery_key_protector_with_keyfile_and_secret(&path, &current_keyfile, &key)?;
+                            PageStore::add_recovery_key_protector_with_keyfile_and_secret(
+                                &path,
+                                &current_keyfile,
+                                &key,
+                            )?;
                         }
                         Err(error) => return Err(error.into()),
                     }
@@ -94,11 +106,17 @@ pub(crate) fn run_protector_action(action: ProtectorAction) -> Result<(), CliErr
                 Ok(slot) => slot,
                 Err(TosumuError::WrongKey) => {
                     let recovery = prompt_passphrase("recovery key: ")?;
-                    match PageStore::add_keyfile_protector_with_recovery_key(&path, &recovery, &keyfile) {
+                    match PageStore::add_keyfile_protector_with_recovery_key(
+                        &path, &recovery, &keyfile,
+                    ) {
                         Ok(slot) => slot,
                         Err(TosumuError::WrongKey) => {
                             let current_keyfile = prompt_keyfile_path("current keyfile path: ")?;
-                            PageStore::add_keyfile_protector_with_keyfile(&path, &current_keyfile, &keyfile)?
+                            PageStore::add_keyfile_protector_with_keyfile(
+                                &path,
+                                &current_keyfile,
+                                &keyfile,
+                            )?
                         }
                         Err(error) => return Err(error.into()),
                     }

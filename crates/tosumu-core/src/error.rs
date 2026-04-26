@@ -116,10 +116,7 @@ pub enum TosumuError {
     InvalidArgument(&'static str),
 
     #[error("page number out of range: requested {pgno}, page_count {page_count}")]
-    InspectPageOutOfRange {
-        pgno: u64,
-        page_count: u64,
-    },
+    InspectPageOutOfRange { pgno: u64, page_count: u64 },
 
     /// A file needed for a database operation is temporarily locked by another
     /// process (e.g. AV scanner, backup tool).  The caller should retry later.
@@ -356,7 +353,10 @@ mod tests {
         let report = TosumuError::WrongKey.error_report();
         assert_eq!(report.code, codes::PROTECTOR_UNLOCK_WRONG_KEY);
         assert_eq!(report.status, ErrorStatus::PermissionDenied);
-        assert_eq!(report.message, "wrong passphrase or key — could not unlock any keyslot");
+        assert_eq!(
+            report.message,
+            "wrong passphrase or key — could not unlock any keyslot"
+        );
     }
 
     #[test]

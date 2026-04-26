@@ -1393,6 +1393,8 @@ Multiple protectors, recovery key, cheap KEK rotation.
 
 #### MVP +8 — "It's interactively inspectable" *(Stage 2–4 TUI viewer)*
 
+Status: complete. Next MVP is MVP+9, the toy SQL layer.
+
 Interactive TUI viewer (§12.4). Can slot in any time after MVP+2, but most valuable after MVP+6 when encrypted DB inspection becomes interesting.
 
 - `tosumu view <path>` — ratatui + crossterm TUI.
@@ -1612,7 +1614,7 @@ Delivered in four sub-slices, ordered by cost-to-build:
 | +5 | `CrashWriter`, `check_invariants`, proptest, crash-boundary fuzz | No partial transactions under crash | Stage 3 correctness | ✅ done |
 | +6 | Passphrase-encrypted DB, Argon2id, DEK wrap, header MAC, KATs, crypto fuzz targets | Crypto works end-to-end | Stage 4a | ✅ done |
 | +7 | Multiple protectors (up to 8), RecoveryKey (Base32), `rekey-kek`, CLI `protector` subcommand; 9 new KATs, 8 new integration tests incl. protector-swap attack | Key management works | Stage 4b | ✅ done |
-| +8 | TUI viewer (`tosumu view`) | Interactive inspection | Stage 2–4 crosscut | |
+| +8 | TUI viewer (`tosumu view`) | Interactive inspection | Stage 2–4 crosscut | ✅ done |
 | +9 | Toy SQL (`CREATE TABLE`, `SELECT`) | Real query foundation | Stage 5 | |
 | +10 | MVCC readers, conditional writes, secondary indexes, `VACUUM` | Concurrency and optimistic write safety | Stage 6 | |
 | +11 | iOS/Android FFI, Keychain/Keystore | Mobile portability | Stage 7 | |

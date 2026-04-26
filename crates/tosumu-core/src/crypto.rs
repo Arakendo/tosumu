@@ -9,18 +9,16 @@
 //   [nonce 12][page_version 8][page_type 1][reserved 3][ciphertext ...][tag 16]
 //   AAD = pgno (u64 LE) || page_version (u64 LE) || page_type (u8)
 
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use crate::error::{Result, TosumuError};
 use crate::format::{
-    PAGE_SIZE, PAGE_PLAINTEXT_SIZE, NONCE_SIZE, TAG_SIZE,
-    PAGE_VERSION_OFFSET, PAGE_VERSION_SIZE, CIPHERTEXT_OFFSET,
-    PAGE_FRAME_TYPE_OFFSET,
-    FILE_HEADER_PLAIN_LEN, KEYSLOT_SIZE,
+    CIPHERTEXT_OFFSET, FILE_HEADER_PLAIN_LEN, KEYSLOT_SIZE, NONCE_SIZE, PAGE_FRAME_TYPE_OFFSET,
+    PAGE_PLAINTEXT_SIZE, PAGE_SIZE, PAGE_VERSION_OFFSET, PAGE_VERSION_SIZE, TAG_SIZE,
 };
 
 /// Generate a fresh 32-byte DEK from the OS random source.
@@ -80,7 +78,10 @@ pub fn encrypt_page(
     let ciphertext = cipher
         .encrypt(
             nonce.as_slice().into(),
-            Payload { msg: plaintext.as_slice(), aad: &aad },
+            Payload {
+                msg: plaintext.as_slice(),
+                aad: &aad,
+            },
         )
         .map_err(|_| TosumuError::EncryptFailed)?;
 
@@ -104,13 +105,20 @@ pub fn decrypt_page(
     pgno: u64,
     frame: &[u8; PAGE_SIZE],
 ) -> Result<([u8; PAGE_PLAINTEXT_SIZE], u64)> {
-    let nonce: [u8; NONCE_SIZE] = frame[0..NONCE_SIZE]
-        .try_into()
-        .map_err(|_| TosumuError::Corrupt { pgno, reason: "bad nonce length" })?;
+    let nonce: [u8; NONCE_SIZE] =
+        frame[0..NONCE_SIZE]
+            .try_into()
+            .map_err(|_| TosumuError::Corrupt {
+                pgno,
+                reason: "bad nonce length",
+            })?;
     let page_version = u64::from_le_bytes(
         frame[PAGE_VERSION_OFFSET..PAGE_VERSION_OFFSET + PAGE_VERSION_SIZE]
             .try_into()
-            .map_err(|_| TosumuError::Corrupt { pgno, reason: "bad page_version length" })?,
+            .map_err(|_| TosumuError::Corrupt {
+                pgno,
+                reason: "bad page_version length",
+            })?,
     );
     let page_type = frame[PAGE_FRAME_TYPE_OFFSET];
     let aad = make_aad(pgno, page_version, page_type);
@@ -121,12 +129,18 @@ pub fn decrypt_page(
     let plaintext = cipher
         .decrypt(
             nonce.as_slice().into(),
-            Payload { msg: ciphertext_with_tag, aad: &aad },
+            Payload {
+                msg: ciphertext_with_tag,
+                aad: &aad,
+            },
         )
         .map_err(|_| TosumuError::AuthFailed { pgno: Some(pgno) })?;
 
     if plaintext.len() != PAGE_PLAINTEXT_SIZE {
-        return Err(TosumuError::Corrupt { pgno, reason: "decrypted page has wrong length" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "decrypted page has wrong length",
+        });
     }
     let mut out = [0u8; PAGE_PLAINTEXT_SIZE];
     out.copy_from_slice(&plaintext);
@@ -225,7 +239,13 @@ pub fn wrap_dek(
     let aad = wrap_aad(slot_index, dek_id, kind);
     let cipher = ChaCha20Poly1305::new(kek.into());
     let ct = cipher
-        .encrypt(nonce.as_slice().into(), Payload { msg: dek.as_slice(), aad: &aad })
+        .encrypt(
+            nonce.as_slice().into(),
+            Payload {
+                msg: dek.as_slice(),
+                aad: &aad,
+            },
+        )
         .map_err(|_| TosumuError::EncryptFailed)?;
     debug_assert_eq!(ct.len(), 48);
     let mut wrapped = [0u8; 48];
@@ -245,7 +265,13 @@ pub fn unwrap_dek(
     let aad = wrap_aad(slot_index, dek_id, kind);
     let cipher = ChaCha20Poly1305::new(kek.into());
     let pt = cipher
-        .decrypt(nonce.as_slice().into(), Payload { msg: wrapped.as_slice(), aad: &aad })
+        .decrypt(
+            nonce.as_slice().into(),
+            Payload {
+                msg: wrapped.as_slice(),
+                aad: &aad,
+            },
+        )
         .map_err(|_| TosumuError::WrongKey)?;
     debug_assert_eq!(pt.len(), 32);
     let mut dek = [0u8; 32];
@@ -269,7 +295,13 @@ const KCV_AAD: &[u8] = b"tosumu/v1/kcv";
 pub fn compute_kcv(kek: &[u8; 32]) -> [u8; 32] {
     let cipher = ChaCha20Poly1305::new(kek.into());
     let ct = cipher
-        .encrypt(KCV_NONCE.as_slice().into(), Payload { msg: &KCV_KNOWN_PT, aad: KCV_AAD })
+        .encrypt(
+            KCV_NONCE.as_slice().into(),
+            Payload {
+                msg: &KCV_KNOWN_PT,
+                aad: KCV_AAD,
+            },
+        )
         .expect("KCV encryption: ChaCha20-Poly1305 over fixed inputs cannot fail");
     debug_assert_eq!(ct.len(), 32);
     let mut kcv = [0u8; 32];
@@ -282,7 +314,13 @@ pub fn compute_kcv(kek: &[u8; 32]) -> [u8; 32] {
 pub fn verify_kcv(kek: &[u8; 32], kcv: &[u8; 32]) -> Result<()> {
     let cipher = ChaCha20Poly1305::new(kek.into());
     cipher
-        .decrypt(KCV_NONCE.as_slice().into(), Payload { msg: kcv.as_slice(), aad: KCV_AAD })
+        .decrypt(
+            KCV_NONCE.as_slice().into(),
+            Payload {
+                msg: kcv.as_slice(),
+                aad: KCV_AAD,
+            },
+        )
         .map_err(|_| TosumuError::WrongKey)?;
     Ok(())
 }
@@ -381,11 +419,12 @@ pub fn derive_recovery_kek(recovery_str: &str) -> Result<[u8; 32]> {
     Ok(kek)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::{OFF_HEADER_MAC, KEYSLOT_REGION_OFFSET, KEYSLOT_KIND_PASSPHRASE, PAGE_VERSION_OFFSET};
+    use crate::format::{
+        KEYSLOT_KIND_PASSPHRASE, KEYSLOT_REGION_OFFSET, OFF_HEADER_MAC, PAGE_VERSION_OFFSET,
+    };
 
     // ── HKDF KAT ─────────────────────────────────────────────────────────────
 
@@ -408,9 +447,15 @@ mod tests {
         // Different DEKs must produce different page_keys.
         let (pk_a, _, _) = derive_subkeys(&[0u8; 32]);
         let (pk_b, _, _) = derive_subkeys(&[1u8; 32]);
-        assert_ne!(pk_a, pk_b, "HKDF must produce different outputs for different DEKs");
+        assert_ne!(
+            pk_a, pk_b,
+            "HKDF must produce different outputs for different DEKs"
+        );
         // Output must be non-trivial (not all zeros with a zero DEK).
-        assert_ne!(pk_a, [0u8; 32], "HKDF page_key must not be all-zeros for a zero DEK");
+        assert_ne!(
+            pk_a, [0u8; 32],
+            "HKDF page_key must not be all-zeros for a zero DEK"
+        );
     }
 
     // ── Page AEAD KAT ─────────────────────────────────────────────────────────
@@ -465,7 +510,7 @@ mod tests {
 
     #[test]
     fn kat_aead_tampered_page_type_rejected() {
-        use crate::format::{PAGE_TYPE_LEAF, PAGE_TYPE_INTERNAL, PAGE_FRAME_TYPE_OFFSET};
+        use crate::format::{PAGE_FRAME_TYPE_OFFSET, PAGE_TYPE_INTERNAL, PAGE_TYPE_LEAF};
         let dek = [0x55u8; 32];
         let (page_key, _, _) = derive_subkeys(&dek);
         let plaintext = [0u8; PAGE_PLAINTEXT_SIZE];
@@ -492,7 +537,8 @@ mod tests {
         let bad_kek = [0xACu8; 32];
         let dek = [0xCDu8; 32];
         let (nonce, wrapped) = wrap_dek(&kek, &dek, 0, 1, KEYSLOT_KIND_PASSPHRASE).unwrap();
-        let err = unwrap_dek(&bad_kek, &nonce, &wrapped, 0, 1, KEYSLOT_KIND_PASSPHRASE).unwrap_err();
+        let err =
+            unwrap_dek(&bad_kek, &nonce, &wrapped, 0, 1, KEYSLOT_KIND_PASSPHRASE).unwrap_err();
         assert!(matches!(err, crate::error::TosumuError::WrongKey));
     }
 
@@ -557,7 +603,10 @@ mod tests {
         // Tamper one byte in the keyslot region
         page0[KEYSLOT_REGION_OFFSET + 5] ^= 0xFF;
         let err = verify_header_mac(&hmk, &page0, 1, &mac).unwrap_err();
-        assert!(matches!(err, crate::error::TosumuError::AuthFailed { pgno: None }));
+        assert!(matches!(
+            err,
+            crate::error::TosumuError::AuthFailed { pgno: None }
+        ));
     }
 
     // ── Argon2id KAT ─────────────────────────────────────────────────────────
@@ -569,10 +618,22 @@ mod tests {
         let t = 1u32.to_le_bytes();
         let pa = 1u32.to_le_bytes();
         let v = 0x13u32.to_le_bytes();
-        p[0] = m[0]; p[1] = m[1]; p[2] = m[2]; p[3] = m[3];
-        p[4] = t[0]; p[5] = t[1]; p[6] = t[2]; p[7] = t[3];
-        p[8] = pa[0]; p[9] = pa[1]; p[10] = pa[2]; p[11] = pa[3];
-        p[12] = v[0]; p[13] = v[1]; p[14] = v[2]; p[15] = v[3];
+        p[0] = m[0];
+        p[1] = m[1];
+        p[2] = m[2];
+        p[3] = m[3];
+        p[4] = t[0];
+        p[5] = t[1];
+        p[6] = t[2];
+        p[7] = t[3];
+        p[8] = pa[0];
+        p[9] = pa[1];
+        p[10] = pa[2];
+        p[11] = pa[3];
+        p[12] = v[0];
+        p[13] = v[1];
+        p[14] = v[2];
+        p[15] = v[3];
         p
     };
 
@@ -601,7 +662,10 @@ mod tests {
         // Must be 4 groups of 8 chars separated by dashes = 35 chars total.
         let parts: Vec<&str> = secret.split('-').collect();
         assert_eq!(parts.len(), 4, "expected 4 dash-separated groups");
-        assert!(parts.iter().all(|p| p.len() == 8), "each group must be 8 chars");
+        assert!(
+            parts.iter().all(|p| p.len() == 8),
+            "each group must be 8 chars"
+        );
 
         // Derive KEK from the generated secret — must not fail.
         let kek = derive_recovery_kek(&secret).unwrap();

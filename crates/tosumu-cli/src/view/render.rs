@@ -5,14 +5,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 
 use tosumu_core::format::{PAGE_TYPE_FREE, PAGE_TYPE_INTERNAL, PAGE_TYPE_LEAF, PAGE_TYPE_OVERFLOW};
 use tosumu_core::inspect::{
-    PageVerifyResult,
-    RecordInfo,
-    TreeChildRelation,
-    TreeNodeSummary,
-    VerifyIssueKind,
-    VerifyReport,
-    WalRecordSummary,
-    WalRecordSummaryKind,
+    PageVerifyResult, RecordInfo, TreeChildRelation, TreeNodeSummary, VerifyIssueKind,
+    VerifyReport, WalRecordSummary, WalRecordSummaryKind,
 };
 
 use super::state::{FocusPane, PageStatus, SelectedPageDetail, ViewApp, ViewMode};
@@ -40,7 +34,12 @@ pub(super) fn draw(frame: &mut ratatui::Frame<'_>, app: &ViewApp) {
 
 fn title_widget(app: &ViewApp) -> Paragraph<'static> {
     let mut spans = vec![
-        Span::styled("tosumu view", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "tosumu view",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::raw(app.path.display().to_string()),
         Span::raw("  "),
@@ -51,7 +50,10 @@ fn title_widget(app: &ViewApp) -> Paragraph<'static> {
         }
         let label = format!("{}:{}", index + 1, mode.label());
         let style = if *mode == app.mode {
-            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -61,12 +63,21 @@ fn title_widget(app: &ViewApp) -> Paragraph<'static> {
 }
 
 fn page_list_widget(app: &ViewApp) -> List<'static> {
-    let items = app.page_list_window().into_iter().map(page_list_item).collect::<Vec<_>>();
+    let items = app
+        .page_list_window()
+        .into_iter()
+        .map(page_list_item)
+        .collect::<Vec<_>>();
     let title = app.page_list_title();
 
     List::new(items)
         .block(focus_block(&title, app.focus == FocusPane::Pages))
-        .highlight_style(Style::default().bg(Color::Blue).fg(Color::Black).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ")
 }
 
@@ -118,7 +129,11 @@ fn help_widget(app: &ViewApp) -> Paragraph<'static> {
     Paragraph::new(text).block(Block::default().borders(Borders::ALL))
 }
 
-fn panel_paragraph(title: &'static str, lines: Vec<Line<'static>>, app: &ViewApp) -> Paragraph<'static> {
+fn panel_paragraph(
+    title: &'static str,
+    lines: Vec<Line<'static>>,
+    app: &ViewApp,
+) -> Paragraph<'static> {
     Paragraph::new(Text::from(lines))
         .block(focus_block(title, app.focus == FocusPane::Panel))
         .scroll((app.panel_scroll, 0))
@@ -130,16 +145,28 @@ fn header_lines(app: &ViewApp) -> Vec<Line<'static>> {
     vec![
         Line::from(format!("format_version:       {}", header.format_version)),
         Line::from(format!("page_size:            {}", header.page_size)),
-        Line::from(format!("min_reader_version:   {}", header.min_reader_version)),
+        Line::from(format!(
+            "min_reader_version:   {}",
+            header.min_reader_version
+        )),
         Line::from(format!("flags:                0x{:04x}", header.flags)),
         Line::from(format!("page_count:           {}", header.page_count)),
         Line::from(format!("root_page:            {}", header.root_page)),
         Line::from(format!("freelist_head:        {}", header.freelist_head)),
-        Line::from(format!("wal_checkpoint_lsn:   {}", header.wal_checkpoint_lsn)),
+        Line::from(format!(
+            "wal_checkpoint_lsn:   {}",
+            header.wal_checkpoint_lsn
+        )),
         Line::from(format!("dek_id:               {}", header.dek_id)),
         Line::from(format!("keyslot_count:        {}", header.keyslot_count)),
-        Line::from(format!("keyslot_region_pages: {}", header.keyslot_region_pages)),
-        Line::from(format!("slot0_kind:           {}", keyslot_kind_label(header.ks0_kind))),
+        Line::from(format!(
+            "keyslot_region_pages: {}",
+            header.keyslot_region_pages
+        )),
+        Line::from(format!(
+            "slot0_kind:           {}",
+            keyslot_kind_label(header.ks0_kind)
+        )),
         Line::from(format!("slot0_version:        {}", header.ks0_version)),
     ]
 }
@@ -163,10 +190,16 @@ fn verify_lines(app: &ViewApp) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
         lines.push(Line::from("Issues:"));
         for issue in app.verify.issues.iter().take(10) {
-            lines.push(Line::from(format!("pg {:>4}: {}", issue.pgno, issue.description)));
+            lines.push(Line::from(format!(
+                "pg {:>4}: {}",
+                issue.pgno, issue.description
+            )));
         }
         if app.verify.issues.len() > 10 {
-            lines.push(Line::from(format!("... {} more issue(s)", app.verify.issues.len() - 10)));
+            lines.push(Line::from(format!(
+                "... {} more issue(s)",
+                app.verify.issues.len() - 10
+            )));
         }
     }
 
@@ -178,7 +211,10 @@ fn detail_lines(app: &ViewApp) -> Vec<Line<'static>> {
     match &app.selected_detail {
         Some(SelectedPageDetail::Decoded(detail)) => {
             lines.push(Line::from(format!("page:         {}", detail.pgno)));
-            lines.push(Line::from(format!("type:         {}", page_type_label(detail.page_type))));
+            lines.push(Line::from(format!(
+                "type:         {}",
+                page_type_label(detail.page_type)
+            )));
             lines.push(Line::from(format!("page_version: {}", detail.page_version)));
             lines.push(Line::from(format!("slot_count:   {}", detail.slot_count)));
             lines.push(Line::from(format!("free_start:   {}", detail.free_start)));
@@ -189,16 +225,29 @@ fn detail_lines(app: &ViewApp) -> Vec<Line<'static>> {
                 lines.push(Line::from("(no decoded records)"));
             } else {
                 for (index, record) in detail.records.iter().enumerate().take(12) {
-                    lines.push(Line::from(format!("slot {index:>2}: {}", record_summary(record))));
+                    lines.push(Line::from(format!(
+                        "slot {index:>2}: {}",
+                        record_summary(record)
+                    )));
                 }
                 if detail.records.len() > 12 {
-                    lines.push(Line::from(format!("... {} more record(s)", detail.records.len() - 12)));
+                    lines.push(Line::from(format!(
+                        "... {} more record(s)",
+                        detail.records.len() - 12
+                    )));
                 }
             }
         }
-        Some(SelectedPageDetail::Unavailable { pgno, status, issue }) => {
+        Some(SelectedPageDetail::Unavailable {
+            pgno,
+            status,
+            issue,
+        }) => {
             lines.push(Line::from(format!("page:    {pgno}")));
-            lines.push(Line::from(format!("status:  {}", page_status_label(*status))));
+            lines.push(Line::from(format!(
+                "status:  {}",
+                page_status_label(*status)
+            )));
             lines.push(Line::from(""));
             if let Some(issue) = issue {
                 lines.push(Line::from(issue.clone()));
@@ -206,7 +255,9 @@ fn detail_lines(app: &ViewApp) -> Vec<Line<'static>> {
                 lines.push(Line::from("No decoded detail is available for this page."));
             }
         }
-        None => lines.push(Line::from("page 0 is the file header; no data pages to inspect yet")),
+        None => lines.push(Line::from(
+            "page 0 is the file header; no data pages to inspect yet",
+        )),
     }
 
     lines
@@ -241,7 +292,10 @@ fn wal_lines(app: &ViewApp) -> Vec<Line<'static>> {
                     lines.push(Line::from(format_wal_record(record)));
                 }
                 if wal.records.len() > 16 {
-                    lines.push(Line::from(format!("... {} more record(s)", wal.records.len() - 16)));
+                    lines.push(Line::from(format!(
+                        "... {} more record(s)",
+                        wal.records.len() - 16
+                    )));
                 }
             }
         }
@@ -254,21 +308,49 @@ fn wal_lines(app: &ViewApp) -> Vec<Line<'static>> {
 fn protectors_lines(app: &ViewApp) -> Vec<Line<'static>> {
     let auth = summarize_page_auth(&app.verify);
     let mut lines = vec![
-        Line::from(format!("protection:           {}", protection_mode_label(app.header.dek_id, app.header.keyslot_count))),
+        Line::from(format!(
+            "protection:           {}",
+            protection_mode_label(app.header.dek_id, app.header.keyslot_count)
+        )),
         Line::from(format!("dek_id:               {}", app.header.dek_id)),
-        Line::from(format!("header keyslot_count: {}", app.header.keyslot_count)),
-        Line::from(format!("region pages:         {}", app.header.keyslot_region_pages)),
-        Line::from(format!("slot0:                {} v{}", keyslot_kind_label(app.header.ks0_kind), app.header.ks0_version)),
+        Line::from(format!(
+            "header keyslot_count: {}",
+            app.header.keyslot_count
+        )),
+        Line::from(format!(
+            "region pages:         {}",
+            app.header.keyslot_region_pages
+        )),
+        Line::from(format!(
+            "slot0:                {} v{}",
+            keyslot_kind_label(app.header.ks0_kind),
+            app.header.ks0_version
+        )),
         Line::from(""),
         Line::from("Page auth:"),
-        Line::from(format!("ok: {}  auth_failed: {}  corrupt: {}  io: {}", auth.ok, auth.auth_failed, auth.corrupt, auth.io)),
+        Line::from(format!(
+            "ok: {}  auth_failed: {}  corrupt: {}  io: {}",
+            auth.ok, auth.auth_failed, auth.corrupt, auth.io
+        )),
     ];
 
-    if let Some(selected_pgno) = app.selected.and_then(|index| app.pages.get(index).map(|page| page.pgno)) {
-        lines.push(Line::from(format!("selected: {}", selected_page_auth_summary(&app.verify, selected_pgno))));
+    if let Some(selected_pgno) = app
+        .selected
+        .and_then(|index| app.pages.get(index).map(|page| page.pgno))
+    {
+        lines.push(Line::from(format!(
+            "selected: {}",
+            selected_page_auth_summary(&app.verify, selected_pgno)
+        )));
     }
 
-    let failures = app.verify.page_results.iter().filter(|result| !result.auth_ok).take(6).collect::<Vec<_>>();
+    let failures = app
+        .verify
+        .page_results
+        .iter()
+        .filter(|result| !result.auth_ok)
+        .take(6)
+        .collect::<Vec<_>>();
     if !failures.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from("Failures:"));
@@ -276,7 +358,10 @@ fn protectors_lines(app: &ViewApp) -> Vec<Line<'static>> {
             lines.push(Line::from(format_page_auth_result(result)));
         }
         if auth.failed_pages() > failures.len() {
-            lines.push(Line::from(format!("... {} more failed page(s)", auth.failed_pages() - failures.len())));
+            lines.push(Line::from(format!(
+                "... {} more failed page(s)",
+                auth.failed_pages() - failures.len()
+            )));
         }
     }
 
@@ -289,7 +374,10 @@ fn protectors_lines(app: &ViewApp) -> Vec<Line<'static>> {
                 lines.push(Line::from("No active keyslots found."));
             } else {
                 for (slot, kind) in keyslots {
-                    lines.push(Line::from(format!("slot {slot:>2}: {}", keyslot_kind_label(*kind))));
+                    lines.push(Line::from(format!(
+                        "slot {slot:>2}: {}",
+                        keyslot_kind_label(*kind)
+                    )));
                 }
             }
         }
@@ -343,7 +431,12 @@ fn protection_mode_label(dek_id: u64, keyslot_count: u16) -> &'static str {
 
 fn format_page_auth_result(result: &PageVerifyResult) -> String {
     let issue = result.issue.as_deref().unwrap_or("no issue text");
-    format!("pg {:>4}: {} - {}", result.pgno, page_verify_state_label(result), issue)
+    format!(
+        "pg {:>4}: {} - {}",
+        result.pgno,
+        page_verify_state_label(result),
+        issue
+    )
 }
 
 pub(super) fn selected_page_auth_summary(report: &VerifyReport, pgno: u64) -> String {
@@ -452,7 +545,11 @@ pub(super) fn preview_bytes(bytes: &[u8]) -> String {
             }
         }
         Err(_) => {
-            let hex = bytes.iter().take(16).map(|b| format!("{b:02x}")).collect::<String>();
+            let hex = bytes
+                .iter()
+                .take(16)
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
             if bytes.len() > 16 {
                 format!("0x{hex}...")
             } else {
@@ -502,11 +599,18 @@ fn push_tree_lines(
 
 pub(super) fn format_wal_record(record: &WalRecordSummary) -> String {
     match &record.kind {
-        WalRecordSummaryKind::Begin { txn_id } => format!("lsn {:>4}: begin txn={txn_id}", record.lsn),
-        WalRecordSummaryKind::PageWrite { pgno, page_version } => {
-            format!("lsn {:>4}: page_write pg={} v{}", record.lsn, pgno, page_version)
+        WalRecordSummaryKind::Begin { txn_id } => {
+            format!("lsn {:>4}: begin txn={txn_id}", record.lsn)
         }
-        WalRecordSummaryKind::Commit { txn_id } => format!("lsn {:>4}: commit txn={txn_id}", record.lsn),
+        WalRecordSummaryKind::PageWrite { pgno, page_version } => {
+            format!(
+                "lsn {:>4}: page_write pg={} v{}",
+                record.lsn, pgno, page_version
+            )
+        }
+        WalRecordSummaryKind::Commit { txn_id } => {
+            format!("lsn {:>4}: commit txn={txn_id}", record.lsn)
+        }
         WalRecordSummaryKind::Checkpoint { up_to_lsn } => {
             format!("lsn {:>4}: checkpoint up_to={up_to_lsn}", record.lsn)
         }

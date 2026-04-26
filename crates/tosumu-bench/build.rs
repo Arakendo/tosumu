@@ -49,8 +49,8 @@ fn main() {
         )
     });
 
-    let see_src = std::env::var("SQLITE_SEE_SRC")
-        .unwrap_or_else(|_| "sqlite3-see-aes256-ofb.c".to_owned());
+    let see_src =
+        std::env::var("SQLITE_SEE_SRC").unwrap_or_else(|_| "sqlite3-see-aes256-ofb.c".to_owned());
 
     let see_dir_path = std::path::PathBuf::from(&see_dir);
     let see_src_path = see_dir_path.join(&see_src);

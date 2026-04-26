@@ -47,10 +47,14 @@ const MAX_RETRIES: u32 = DEFAULT_MAX_RETRIES;
 /// - Test mode: OS error 32 is accepted as a fault-injection signal on all platforms.
 fn is_transient_lock(e: &std::io::Error) -> bool {
     #[cfg(windows)]
-    if matches!(e.raw_os_error(), Some(32) | Some(33)) { return true; }
+    if matches!(e.raw_os_error(), Some(32) | Some(33)) {
+        return true;
+    }
     // Fault injection in tests synthesises OS error 32 on any platform.
     #[cfg(test)]
-    if e.raw_os_error() == Some(32) { return true; }
+    if e.raw_os_error() == Some(32) {
+        return true;
+    }
     let _ = e;
     false
 }
@@ -166,14 +170,16 @@ pub(crate) mod fault_injection {
 struct FaultGuard;
 #[cfg(test)]
 impl Drop for FaultGuard {
-    fn drop(&mut self) { fault_injection::disarm(); }
+    fn drop(&mut self) {
+        fault_injection::disarm();
+    }
 }
 
 // ── Record type discriminants ─────────────────────────────────────────────────
 
-const RT_BEGIN:      u8 = 0x01;
+const RT_BEGIN: u8 = 0x01;
 const RT_PAGE_WRITE: u8 = 0x02;
-const RT_COMMIT:     u8 = 0x03;
+const RT_COMMIT: u8 = 0x03;
 const RT_CHECKPOINT: u8 = 0x04;
 
 /// Largest payload any valid WAL record can carry.
@@ -191,10 +197,20 @@ pub const RECORD_HEADER_SIZE: usize = 17;
 /// A decoded WAL record.
 #[derive(Debug, Clone)]
 pub enum WalRecord {
-    Begin      { txn_id: u64 },
-    PageWrite  { pgno: u64, page_version: u64, frame: Box<[u8; PAGE_SIZE]> },
-    Commit     { txn_id: u64 },
-    Checkpoint { up_to_lsn: u64 },
+    Begin {
+        txn_id: u64,
+    },
+    PageWrite {
+        pgno: u64,
+        page_version: u64,
+        frame: Box<[u8; PAGE_SIZE]>,
+    },
+    Commit {
+        txn_id: u64,
+    },
+    Checkpoint {
+        up_to_lsn: u64,
+    },
 }
 
 impl WalRecord {
@@ -218,31 +234,29 @@ impl WalRecord {
 
     fn type_byte(&self) -> u8 {
         match self {
-            WalRecord::Begin { .. }      => RT_BEGIN,
-            WalRecord::PageWrite { .. }  => RT_PAGE_WRITE,
-            WalRecord::Commit { .. }     => RT_COMMIT,
+            WalRecord::Begin { .. } => RT_BEGIN,
+            WalRecord::PageWrite { .. } => RT_PAGE_WRITE,
+            WalRecord::Commit { .. } => RT_COMMIT,
             WalRecord::Checkpoint { .. } => RT_CHECKPOINT,
         }
     }
 
     fn encode_payload(&self) -> Vec<u8> {
         match self {
-            WalRecord::Begin { txn_id } => {
-                txn_id.to_le_bytes().to_vec()
-            }
-            WalRecord::PageWrite { pgno, page_version, frame } => {
+            WalRecord::Begin { txn_id } => txn_id.to_le_bytes().to_vec(),
+            WalRecord::PageWrite {
+                pgno,
+                page_version,
+                frame,
+            } => {
                 let mut p = Vec::with_capacity(8 + 8 + PAGE_SIZE);
                 p.extend_from_slice(&pgno.to_le_bytes());
                 p.extend_from_slice(&page_version.to_le_bytes());
                 p.extend_from_slice(frame.as_ref());
                 p
             }
-            WalRecord::Commit { txn_id } => {
-                txn_id.to_le_bytes().to_vec()
-            }
-            WalRecord::Checkpoint { up_to_lsn } => {
-                up_to_lsn.to_le_bytes().to_vec()
-            }
+            WalRecord::Commit { txn_id } => txn_id.to_le_bytes().to_vec(),
+            WalRecord::Checkpoint { up_to_lsn } => up_to_lsn.to_le_bytes().to_vec(),
         }
     }
 }
@@ -259,10 +273,7 @@ pub struct WalWriter {
 impl WalWriter {
     /// Create a new WAL file. Fails if the file already exists.
     pub fn create(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
+        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
         Ok(WalWriter { file, next_lsn: 1 })
     }
 
@@ -271,10 +282,7 @@ impl WalWriter {
     /// Scans all validated existing records to determine `next_lsn` and trims
     /// any torn partial tail before appending.
     pub fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)?;
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
         let (max_lsn, append_offset) = scan_append_state(&file)?;
         let next_lsn = max_lsn.checked_add(1).ok_or(TosumuError::CorruptRecord {
             offset: append_offset,
@@ -314,7 +322,9 @@ impl WalWriter {
     }
 
     /// The LSN that will be assigned to the next appended record.
-    pub fn next_lsn(&self) -> u64 { self.next_lsn }
+    pub fn next_lsn(&self) -> u64 {
+        self.next_lsn
+    }
 
     /// Truncate the WAL to zero bytes (used after a full checkpoint).
     pub fn truncate(&mut self) -> Result<()> {
@@ -376,7 +386,10 @@ impl WalReader {
             || OpenOptions::new().read(true).open(path),
             "opening WAL for record replay",
         )?;
-        Ok(WalReader { reader: BufReader::new(file), pos: 0 })
+        Ok(WalReader {
+            reader: BufReader::new(file),
+            pos: 0,
+        })
     }
 
     /// Read the next record. Returns `None` at clean EOF; error on truncation/CRC failure.
@@ -390,7 +403,7 @@ impl WalReader {
             Err(e) => return Err(e.into()),
         }
 
-        let lsn         = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
+        let lsn = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
         let record_type = hdr[8];
         let payload_len = u32::from_le_bytes(hdr[9..13].try_into().unwrap()) as usize;
         validate_payload_len(payload_len, record_start)?;
@@ -398,15 +411,25 @@ impl WalReader {
         let mut payload = vec![0u8; payload_len];
         self.reader.read_exact(&mut payload).map_err(|e| {
             if e.kind() == ErrorKind::UnexpectedEof {
-                TosumuError::CorruptRecord { offset: record_start, reason: "WAL record truncated in payload" }
-            } else { e.into() }
+                TosumuError::CorruptRecord {
+                    offset: record_start,
+                    reason: "WAL record truncated in payload",
+                }
+            } else {
+                e.into()
+            }
         })?;
 
         let mut crc_bytes = [0u8; 4];
         self.reader.read_exact(&mut crc_bytes).map_err(|e| {
             if e.kind() == ErrorKind::UnexpectedEof {
-                TosumuError::CorruptRecord { offset: record_start, reason: "WAL record truncated in CRC" }
-            } else { e.into() }
+                TosumuError::CorruptRecord {
+                    offset: record_start,
+                    reason: "WAL record truncated in CRC",
+                }
+            } else {
+                e.into()
+            }
         })?;
         let stored_crc = u32::from_le_bytes(crc_bytes);
 
@@ -470,8 +493,15 @@ pub fn recover(db_path: &Path, wal_path: &Path) -> Result<u64> {
     let records = WalReader::read_all(wal_path)?;
 
     // Find all committed txn_ids.
-    let committed: std::collections::HashSet<u64> = records.iter()
-        .filter_map(|(_, r)| if let WalRecord::Commit { txn_id } = r { Some(*txn_id) } else { None })
+    let committed: std::collections::HashSet<u64> = records
+        .iter()
+        .filter_map(|(_, r)| {
+            if let WalRecord::Commit { txn_id } = r {
+                Some(*txn_id)
+            } else {
+                None
+            }
+        })
         .collect();
 
     // Track the last active txn_id for Begin records.
@@ -525,9 +555,12 @@ fn apply_committed_writes(
             WalRecord::PageWrite { pgno, frame, .. } => {
                 if let Some(tid) = current_txn {
                     if committed.contains(&tid) {
-                        let offset = pgno.checked_mul(PAGE_SIZE as u64).ok_or(
-                            TosumuError::Corrupt { pgno: *pgno, reason: "WAL page offset overflow" }
-                        )?;
+                        let offset =
+                            pgno.checked_mul(PAGE_SIZE as u64)
+                                .ok_or(TosumuError::Corrupt {
+                                    pgno: *pgno,
+                                    reason: "WAL page offset overflow",
+                                })?;
                         db_file.seek(SeekFrom::Start(offset))?;
                         db_file.write_all(frame.as_ref())?;
                     }
@@ -574,34 +607,59 @@ fn decode_payload(record_type: u8, payload: &[u8], offset: u64) -> Result<WalRec
     match record_type {
         RT_BEGIN => {
             if payload.len() < 8 {
-                return Err(TosumuError::CorruptRecord { offset, reason: "Begin payload too short" });
+                return Err(TosumuError::CorruptRecord {
+                    offset,
+                    reason: "Begin payload too short",
+                });
             }
-            Ok(WalRecord::Begin { txn_id: u64::from_le_bytes(payload[0..8].try_into().unwrap()) })
+            Ok(WalRecord::Begin {
+                txn_id: u64::from_le_bytes(payload[0..8].try_into().unwrap()),
+            })
         }
         RT_PAGE_WRITE => {
             let expected = 8 + 8 + PAGE_SIZE;
             if payload.len() < expected {
-                return Err(TosumuError::CorruptRecord { offset, reason: "PageWrite payload too short" });
+                return Err(TosumuError::CorruptRecord {
+                    offset,
+                    reason: "PageWrite payload too short",
+                });
             }
-            let pgno         = u64::from_le_bytes(payload[0..8].try_into().unwrap());
+            let pgno = u64::from_le_bytes(payload[0..8].try_into().unwrap());
             let page_version = u64::from_le_bytes(payload[8..16].try_into().unwrap());
             let mut frame = Box::new([0u8; PAGE_SIZE]);
             frame.copy_from_slice(&payload[16..16 + PAGE_SIZE]);
-            Ok(WalRecord::PageWrite { pgno, page_version, frame })
+            Ok(WalRecord::PageWrite {
+                pgno,
+                page_version,
+                frame,
+            })
         }
         RT_COMMIT => {
             if payload.len() < 8 {
-                return Err(TosumuError::CorruptRecord { offset, reason: "Commit payload too short" });
+                return Err(TosumuError::CorruptRecord {
+                    offset,
+                    reason: "Commit payload too short",
+                });
             }
-            Ok(WalRecord::Commit { txn_id: u64::from_le_bytes(payload[0..8].try_into().unwrap()) })
+            Ok(WalRecord::Commit {
+                txn_id: u64::from_le_bytes(payload[0..8].try_into().unwrap()),
+            })
         }
         RT_CHECKPOINT => {
             if payload.len() < 8 {
-                return Err(TosumuError::CorruptRecord { offset, reason: "Checkpoint payload too short" });
+                return Err(TosumuError::CorruptRecord {
+                    offset,
+                    reason: "Checkpoint payload too short",
+                });
             }
-            Ok(WalRecord::Checkpoint { up_to_lsn: u64::from_le_bytes(payload[0..8].try_into().unwrap()) })
+            Ok(WalRecord::Checkpoint {
+                up_to_lsn: u64::from_le_bytes(payload[0..8].try_into().unwrap()),
+            })
         }
-        _ => Err(TosumuError::CorruptRecord { offset, reason: "unknown WAL record type" }),
+        _ => Err(TosumuError::CorruptRecord {
+            offset,
+            reason: "unknown WAL record type",
+        }),
     }
 }
 
@@ -630,7 +688,7 @@ fn scan_append_state(file: &File) -> Result<(u64, u64)> {
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e.into()),
         }
-        let lsn         = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
+        let lsn = u64::from_le_bytes(hdr[0..8].try_into().unwrap());
         let record_type = hdr[8];
         let payload_len = u32::from_le_bytes(hdr[9..13].try_into().unwrap()) as usize;
         validate_payload_len(payload_len, record_start)?;
@@ -677,17 +735,11 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "tosumu_wal_{name}_{}.wal",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("tosumu_wal_{name}_{}.wal", std::process::id()))
     }
 
     fn tmp_db(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "tosumu_wal_{name}_{}.tsm",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("tosumu_wal_{name}_{}.tsm", std::process::id()))
     }
 
     #[test]
@@ -700,22 +752,40 @@ mod tests {
 
         let mut frame = Box::new([0u8; PAGE_SIZE]);
         frame[0] = 0xAB;
-        writer.append(&WalRecord::PageWrite { pgno: 5, page_version: 7, frame }).unwrap();
+        writer
+            .append(&WalRecord::PageWrite {
+                pgno: 5,
+                page_version: 7,
+                frame,
+            })
+            .unwrap();
         writer.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
-        writer.append(&WalRecord::Checkpoint { up_to_lsn: 3 }).unwrap();
+        writer
+            .append(&WalRecord::Checkpoint { up_to_lsn: 3 })
+            .unwrap();
         writer.sync().unwrap();
 
         let records = WalReader::read_all(&p).unwrap();
         assert_eq!(records.len(), 4);
 
         assert!(matches!(records[0].1, WalRecord::Begin { txn_id: 1 }));
-        if let WalRecord::PageWrite { pgno, page_version, ref frame } = records[1].1 {
+        if let WalRecord::PageWrite {
+            pgno,
+            page_version,
+            ref frame,
+        } = records[1].1
+        {
             assert_eq!(pgno, 5);
             assert_eq!(page_version, 7);
             assert_eq!(frame[0], 0xAB);
-        } else { panic!("expected PageWrite"); }
+        } else {
+            panic!("expected PageWrite");
+        }
         assert!(matches!(records[2].1, WalRecord::Commit { txn_id: 1 }));
-        assert!(matches!(records[3].1, WalRecord::Checkpoint { up_to_lsn: 3 }));
+        assert!(matches!(
+            records[3].1,
+            WalRecord::Checkpoint { up_to_lsn: 3 }
+        ));
 
         let _ = std::fs::remove_file(&p);
     }
@@ -782,7 +852,12 @@ mod tests {
             frame[0] = 0xAA;
             w.append(&WalRecord::Begin { txn_id: 2 }).unwrap();
             let last_complete_len = std::fs::metadata(&p).unwrap().len();
-            w.append(&WalRecord::PageWrite { pgno: 9, page_version: 1, frame }).unwrap();
+            w.append(&WalRecord::PageWrite {
+                pgno: 9,
+                page_version: 1,
+                frame,
+            })
+            .unwrap();
             w.sync().unwrap();
             drop(w);
 
@@ -862,7 +937,7 @@ mod tests {
     #[test]
     fn recover_reports_mid_log_crc_corruption() {
         let wal_p = tmp("recover_crc_corrupt_wal");
-        let db_p  = tmp_db("recover_crc_corrupt_db");
+        let db_p = tmp_db("recover_crc_corrupt_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -905,7 +980,10 @@ mod tests {
         let err = rdr.next_record().unwrap_err();
         assert!(matches!(
             err,
-            TosumuError::CorruptRecord { offset: 0, reason: "WAL payload_len out of range" }
+            TosumuError::CorruptRecord {
+                offset: 0,
+                reason: "WAL payload_len out of range"
+            }
         ));
 
         let _ = std::fs::remove_file(&p);
@@ -928,7 +1006,10 @@ mod tests {
         };
         assert!(matches!(
             err,
-            TosumuError::CorruptRecord { offset: 0, reason: "WAL payload_len out of range" }
+            TosumuError::CorruptRecord {
+                offset: 0,
+                reason: "WAL payload_len out of range"
+            }
         ));
 
         let _ = std::fs::remove_file(&p);
@@ -960,7 +1041,8 @@ mod tests {
                 pgno: 0,
                 page_version: 0,
                 frame: Box::new(page0),
-            }).unwrap();
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
@@ -971,7 +1053,10 @@ mod tests {
         };
         assert!(matches!(
             err,
-            TosumuError::Corrupt { pgno: 0, reason: "keyslot_count in header is out of valid range" }
+            TosumuError::Corrupt {
+                pgno: 0,
+                reason: "keyslot_count in header is out of valid range"
+            }
         ));
 
         let _ = std::fs::remove_file(&db_p);
@@ -981,7 +1066,7 @@ mod tests {
     #[test]
     fn recover_applies_committed_page_writes() {
         let wal_p = tmp("recover_wal");
-        let db_p  = tmp_db("recover_db");
+        let db_p = tmp_db("recover_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -994,7 +1079,12 @@ mod tests {
         let mut frame = Box::new([0u8; PAGE_SIZE]);
         frame[0] = 0xBE;
         frame[1] = 0xEF;
-        w.append(&WalRecord::PageWrite { pgno: 2, page_version: 1, frame }).unwrap();
+        w.append(&WalRecord::PageWrite {
+            pgno: 2,
+            page_version: 1,
+            frame,
+        })
+        .unwrap();
         w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
         w.sync().unwrap();
 
@@ -1012,7 +1102,7 @@ mod tests {
     #[test]
     fn recover_rejects_overflowing_page_offset() {
         let wal_p = tmp("recover_offset_overflow_wal");
-        let db_p  = tmp_db("recover_offset_overflow_db");
+        let db_p = tmp_db("recover_offset_overflow_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -1024,7 +1114,8 @@ mod tests {
             pgno: u64::MAX,
             page_version: 1,
             frame: Box::new([0u8; PAGE_SIZE]),
-        }).unwrap();
+        })
+        .unwrap();
         w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
         w.sync().unwrap();
 
@@ -1041,7 +1132,7 @@ mod tests {
     #[test]
     fn recover_ignores_uncommitted() {
         let wal_p = tmp("uncommitted_wal");
-        let db_p  = tmp_db("uncommitted_db");
+        let db_p = tmp_db("uncommitted_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -1052,14 +1143,22 @@ mod tests {
         w.append(&WalRecord::Begin { txn_id: 42 }).unwrap();
         let mut frame = Box::new([0u8; PAGE_SIZE]);
         frame[0] = 0xFF;
-        w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+        w.append(&WalRecord::PageWrite {
+            pgno: 1,
+            page_version: 1,
+            frame,
+        })
+        .unwrap();
         w.sync().unwrap();
 
         recover(&db_p, &wal_p).unwrap();
 
         // Page 1 must remain zero — the transaction was never committed.
         let raw = std::fs::read(&db_p).unwrap();
-        assert_eq!(raw[PAGE_SIZE], 0x00, "uncommitted write must not be applied");
+        assert_eq!(
+            raw[PAGE_SIZE], 0x00,
+            "uncommitted write must not be applied"
+        );
 
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
@@ -1071,7 +1170,7 @@ mod tests {
         // correctly into .tsm on recovery — using actual Pager/BTree output.
         use crate::btree::BTree;
 
-        let db_p  = tmp_db("integ_rec");
+        let db_p = tmp_db("integ_rec");
         let wal_p = tmp("integ_rec");
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1104,7 +1203,8 @@ mod tests {
                 pgno: 1,
                 page_version,
                 frame: Box::new(frame),
-            }).unwrap();
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 99 }).unwrap();
             w.sync().unwrap();
         }
@@ -1114,7 +1214,9 @@ mod tests {
         let mut reset = snapshot.clone();
         // Zero out page 1.
         if reset.len() >= PAGE_SIZE * 2 {
-            for b in &mut reset[PAGE_SIZE..PAGE_SIZE * 2] { *b = 0; }
+            for b in &mut reset[PAGE_SIZE..PAGE_SIZE * 2] {
+                *b = 0;
+            }
         } else {
             reset.resize(PAGE_SIZE * (page_count as usize).max(2), 0);
         }
@@ -1125,8 +1227,11 @@ mod tests {
 
         // 7. Open the DB and assert the key is visible.
         let t = BTree::open(&db_p).unwrap();
-        assert_eq!(t.get(b"hello").unwrap(), Some(b"world".to_vec()),
-            "key must be visible after WAL recovery");
+        assert_eq!(
+            t.get(b"hello").unwrap(),
+            Some(b"world".to_vec()),
+            "key must be visible after WAL recovery"
+        );
 
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1135,7 +1240,7 @@ mod tests {
     #[test]
     fn checkpoint_truncates_wal() {
         let wal_p = tmp("ckpt_wal");
-        let db_p  = tmp_db("ckpt_db");
+        let db_p = tmp_db("ckpt_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -1148,7 +1253,11 @@ mod tests {
 
         checkpoint(&db_p, &wal_p).unwrap();
 
-        assert_eq!(std::fs::metadata(&wal_p).unwrap().len(), 0, "WAL must be empty after checkpoint");
+        assert_eq!(
+            std::fs::metadata(&wal_p).unwrap().len(),
+            0,
+            "WAL must be empty after checkpoint"
+        );
 
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
@@ -1161,7 +1270,7 @@ mod tests {
     #[test]
     fn partial_record_at_tail_is_ignored() {
         let wal_p = tmp("partial_wal");
-        let db_p  = tmp_db("partial_db");
+        let db_p = tmp_db("partial_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -1173,7 +1282,12 @@ mod tests {
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             let mut frame = Box::new([0u8; PAGE_SIZE]);
             frame[0] = 0xAA;
-            w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+            w.append(&WalRecord::PageWrite {
+                pgno: 1,
+                page_version: 1,
+                frame,
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
@@ -1186,7 +1300,12 @@ mod tests {
             w.append(&WalRecord::Begin { txn_id: 2 }).unwrap();
             let mut frame2 = Box::new([0u8; PAGE_SIZE]);
             frame2[0] = 0xBB;
-            w.append(&WalRecord::PageWrite { pgno: 2, page_version: 1, frame: frame2 }).unwrap();
+            w.append(&WalRecord::PageWrite {
+                pgno: 2,
+                page_version: 1,
+                frame: frame2,
+            })
+            .unwrap();
             w.sync().unwrap();
         }
 
@@ -1194,15 +1313,25 @@ mod tests {
         // of txn 2, which must be ignored on recovery.
         let partial_len = safe_len + 30;
         {
-            let f = std::fs::OpenOptions::new().write(true).open(&wal_p).unwrap();
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&wal_p)
+                .unwrap();
             f.set_len(partial_len).unwrap();
         }
 
         recover(&db_p, &wal_p).unwrap();
 
         let raw = std::fs::read(&db_p).unwrap();
-        assert_eq!(raw[PAGE_SIZE],     0xAA, "committed txn 1 page 1 must be applied");
-        assert_eq!(raw[PAGE_SIZE * 2], 0x00, "partial txn 2 page 2 must NOT be applied");
+        assert_eq!(
+            raw[PAGE_SIZE], 0xAA,
+            "committed txn 1 page 1 must be applied"
+        );
+        assert_eq!(
+            raw[PAGE_SIZE * 2],
+            0x00,
+            "partial txn 2 page 2 must NOT be applied"
+        );
 
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
@@ -1214,7 +1343,7 @@ mod tests {
     #[test]
     fn multi_txn_only_committed_applied() {
         let wal_p = tmp("multi_txn_wal");
-        let db_p  = tmp_db("multi_txn_db");
+        let db_p = tmp_db("multi_txn_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -1226,22 +1355,39 @@ mod tests {
         w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
         let mut f1 = Box::new([0u8; PAGE_SIZE]);
         f1[0] = 0x11;
-        w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame: f1 }).unwrap();
+        w.append(&WalRecord::PageWrite {
+            pgno: 1,
+            page_version: 1,
+            frame: f1,
+        })
+        .unwrap();
         w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
 
         // Txn 2: crash before commit — writes page 2.
         w.append(&WalRecord::Begin { txn_id: 2 }).unwrap();
         let mut f2 = Box::new([0u8; PAGE_SIZE]);
         f2[0] = 0x22;
-        w.append(&WalRecord::PageWrite { pgno: 2, page_version: 1, frame: f2 }).unwrap();
+        w.append(&WalRecord::PageWrite {
+            pgno: 2,
+            page_version: 1,
+            frame: f2,
+        })
+        .unwrap();
         // NO Commit — simulates crash.
         w.sync().unwrap();
 
         recover(&db_p, &wal_p).unwrap();
 
         let raw = std::fs::read(&db_p).unwrap();
-        assert_eq!(raw[PAGE_SIZE],     0x11, "committed txn 1 must be applied to page 1");
-        assert_eq!(raw[PAGE_SIZE * 2], 0x00, "uncommitted txn 2 must NOT be applied to page 2");
+        assert_eq!(
+            raw[PAGE_SIZE], 0x11,
+            "committed txn 1 must be applied to page 1"
+        );
+        assert_eq!(
+            raw[PAGE_SIZE * 2],
+            0x00,
+            "uncommitted txn 2 must NOT be applied to page 2"
+        );
 
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
@@ -1252,7 +1398,7 @@ mod tests {
     #[test]
     fn recover_is_idempotent() {
         let wal_p = tmp("idem_wal");
-        let db_p  = tmp_db("idem_db");
+        let db_p = tmp_db("idem_db");
         let _ = std::fs::remove_file(&wal_p);
         let _ = std::fs::remove_file(&db_p);
 
@@ -1262,12 +1408,17 @@ mod tests {
         w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
         let mut frame = Box::new([0u8; PAGE_SIZE]);
         frame[42] = 0xCC;
-        w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+        w.append(&WalRecord::PageWrite {
+            pgno: 1,
+            page_version: 1,
+            frame,
+        })
+        .unwrap();
         w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
         w.sync().unwrap();
 
         recover(&db_p, &wal_p).unwrap();
-        let after_first  = std::fs::read(&db_p).unwrap();
+        let after_first = std::fs::read(&db_p).unwrap();
 
         recover(&db_p, &wal_p).unwrap();
         let after_second = std::fs::read(&db_p).unwrap();
@@ -1284,7 +1435,7 @@ mod tests {
     fn crash_after_commit_before_flush_recovered_on_reopen() {
         use crate::btree::BTree;
 
-        let db_p  = tmp_db("crash_commit");
+        let db_p = tmp_db("crash_commit");
         // The WAL sidecar that BTree::open will look for is wal_path(&db_p).
         let wal_p = wal_path(&db_p);
         let _ = std::fs::remove_file(&db_p);
@@ -1305,7 +1456,9 @@ mod tests {
         // 3. Simulate crash: zero out page 1 in .tsm (flush never completed).
         let db_bytes = std::fs::read(&db_p).unwrap();
         let mut reset = db_bytes;
-        for b in &mut reset[PAGE_SIZE..PAGE_SIZE * 2] { *b = 0; }
+        for b in &mut reset[PAGE_SIZE..PAGE_SIZE * 2] {
+            *b = 0;
+        }
         std::fs::write(&db_p, &reset).unwrap();
 
         // Remove the WAL that was created by create()/open() so we can write our own.
@@ -1319,7 +1472,8 @@ mod tests {
                 pgno: 1,
                 page_version: 1,
                 frame: Box::new(real_frame),
-            }).unwrap();
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 7 }).unwrap();
             w.sync().unwrap();
         }
@@ -1361,15 +1515,17 @@ mod tests {
         //    at least one root split. 200 inserts reliably produces height >= 2.
         {
             let mut store = PageStore::create(&db_p).unwrap();
-            store.transaction(|tx| {
-                for i in 0u32..500 {
-                    tx.put(
-                        format!("key{i:05}").as_bytes(),
-                        format!("val{i:05}").as_bytes(),
-                    )?;
-                }
-                Ok(())
-            }).unwrap();
+            store
+                .transaction(|tx| {
+                    for i in 0u32..500 {
+                        tx.put(
+                            format!("key{i:05}").as_bytes(),
+                            format!("val{i:05}").as_bytes(),
+                        )?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
             // Confirm the tree actually split before we stress recovery.
             assert!(
                 store.stat().unwrap().tree_height >= 2,
@@ -1396,7 +1552,8 @@ mod tests {
                     pgno: pgno as u64,
                     page_version: 1,
                     frame,
-                }).unwrap();
+                })
+                .unwrap();
             }
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
@@ -1406,7 +1563,9 @@ mod tests {
         //    Page 0 (plaintext header) is preserved — it holds page_count and
         //    root_page so the pager can seek to the right offsets during replay.
         let mut raw = committed_bytes;
-        for b in &mut raw[PAGE_SIZE..] { *b = 0; }
+        for b in &mut raw[PAGE_SIZE..] {
+            *b = 0;
+        }
         std::fs::write(&db_p, &raw).unwrap();
 
         // 3. Reopen — Pager::open detects the WAL sidecar and replays all
@@ -1438,10 +1597,12 @@ mod tests {
     /// A failed recovery leaves files intact so the next `open()` can retry.
     #[test]
     fn recovery_returns_file_busy_after_exhausted_retries() {
-        let _fi_lock = fault_injection::LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _fi_lock = fault_injection::LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let _cleanup = FaultGuard;
 
-        let db_p  = tmp_db("fi_file_busy");
+        let db_p = tmp_db("fi_file_busy");
         let wal_p = tmp("fi_file_busy");
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1452,12 +1613,17 @@ mod tests {
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             let mut frame = Box::new([0u8; PAGE_SIZE]);
             frame[0] = 0xAB;
-            w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+            w.append(&WalRecord::PageWrite {
+                pgno: 1,
+                page_version: 1,
+                frame,
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
 
-        let db_before  = std::fs::read(&db_p).unwrap();
+        let db_before = std::fs::read(&db_p).unwrap();
         let wal_before = std::fs::read(&wal_p).unwrap();
 
         // Exhaust all MAX_RETRIES+1 attempts.
@@ -1470,8 +1636,16 @@ mod tests {
         );
 
         // Both files must be byte-for-byte unchanged — no partial application.
-        assert_eq!(std::fs::read(&db_p).unwrap(),  db_before,  "database must be unchanged");
-        assert_eq!(std::fs::read(&wal_p).unwrap(), wal_before, "WAL must be unchanged");
+        assert_eq!(
+            std::fs::read(&db_p).unwrap(),
+            db_before,
+            "database must be unchanged"
+        );
+        assert_eq!(
+            std::fs::read(&wal_p).unwrap(),
+            wal_before,
+            "WAL must be unchanged"
+        );
 
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1481,10 +1655,12 @@ mod tests {
     /// retries successfully and applies the committed writes.
     #[test]
     fn recovery_retries_and_succeeds_after_transient_faults() {
-        let _fi_lock = fault_injection::LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _fi_lock = fault_injection::LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let _cleanup = FaultGuard;
 
-        let db_p  = tmp_db("fi_retry_ok");
+        let db_p = tmp_db("fi_retry_ok");
         let wal_p = tmp("fi_retry_ok");
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1495,7 +1671,12 @@ mod tests {
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             let mut frame = Box::new([0u8; PAGE_SIZE]);
             frame[0] = 0xCC;
-            w.append(&WalRecord::PageWrite { pgno: 1, page_version: 1, frame }).unwrap();
+            w.append(&WalRecord::PageWrite {
+                pgno: 1,
+                page_version: 1,
+                frame,
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
@@ -1505,7 +1686,10 @@ mod tests {
         recover(&db_p, &wal_p).expect("recovery must succeed after transient faults");
 
         let raw = std::fs::read(&db_p).unwrap();
-        assert_eq!(raw[PAGE_SIZE], 0xCC, "committed write must be applied after retry recovery");
+        assert_eq!(
+            raw[PAGE_SIZE], 0xCC,
+            "committed write must be applied after retry recovery"
+        );
 
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1515,10 +1699,12 @@ mod tests {
     /// non-empty operation description — not silently swallowed as `Corrupt`.
     #[test]
     fn file_busy_error_contains_path_and_operation() {
-        let _fi_lock = fault_injection::LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _fi_lock = fault_injection::LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let _cleanup = FaultGuard;
 
-        let db_p  = tmp_db("fi_path_check");
+        let db_p = tmp_db("fi_path_check");
         let wal_p = tmp("fi_path_check");
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1526,7 +1712,7 @@ mod tests {
         std::fs::write(&db_p, vec![0u8; PAGE_SIZE]).unwrap();
         {
             let mut w = WalWriter::create(&wal_p).unwrap();
-            w.append(&WalRecord::Begin  { txn_id: 1 }).unwrap();
+            w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
@@ -1537,8 +1723,10 @@ mod tests {
         match recover(&db_p, &wal_p).unwrap_err() {
             TosumuError::FileBusy { path, operation } => {
                 assert_eq!(path, wal_p, "FileBusy must identify the locked file");
-                assert_eq!(operation, "opening WAL for record replay",
-                    "operation must identify which step failed");
+                assert_eq!(
+                    operation, "opening WAL for record replay",
+                    "operation must identify which step failed"
+                );
             }
             other => panic!("expected FileBusy, got {other:?}"),
         }
@@ -1557,10 +1745,10 @@ mod tests {
     #[cfg(windows)]
     #[ignore = "requires Windows file-locking semantics; run manually"]
     fn av_style_lock_during_recovery_retries_then_succeeds() {
-        use std::os::windows::fs::OpenOptionsExt;
         use crate::btree::BTree;
+        use std::os::windows::fs::OpenOptionsExt;
 
-        let db_p  = tmp_db("av_lock");
+        let db_p = tmp_db("av_lock");
         let wal_p = wal_path(&db_p);
         let _ = std::fs::remove_file(&db_p);
         let _ = std::fs::remove_file(&wal_p);
@@ -1576,15 +1764,20 @@ mod tests {
         };
         // Simulate crash: zero page 1, rebuild WAL manually.
         let mut raw = std::fs::read(&db_p).unwrap();
-        for b in &mut raw[PAGE_SIZE..PAGE_SIZE * 2] { *b = 0; }
+        for b in &mut raw[PAGE_SIZE..PAGE_SIZE * 2] {
+            *b = 0;
+        }
         std::fs::write(&db_p, &raw).unwrap();
         let _ = std::fs::remove_file(&wal_p);
         {
             let mut w = WalWriter::create(&wal_p).unwrap();
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             w.append(&WalRecord::PageWrite {
-                pgno: 1, page_version: 1, frame: Box::new(real_frame),
-            }).unwrap();
+                pgno: 1,
+                page_version: 1,
+                frame: Box::new(real_frame),
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
@@ -1638,10 +1831,16 @@ mod tests {
     fn assert_old_state(db_p: &PathBuf) {
         use crate::btree::BTree;
         let t = BTree::open(db_p).unwrap();
-        assert_eq!(t.get(b"base_key").unwrap(), Some(b"base_val".to_vec()),
-            "base_key must survive uncommitted crash scenario");
-        assert_eq!(t.get(b"new_key").unwrap(), None,
-            "new_key from uncommitted txn must not appear after recovery");
+        assert_eq!(
+            t.get(b"base_key").unwrap(),
+            Some(b"base_val".to_vec()),
+            "base_key must survive uncommitted crash scenario"
+        );
+        assert_eq!(
+            t.get(b"new_key").unwrap(),
+            None,
+            "new_key from uncommitted txn must not appear after recovery"
+        );
         t.check_invariants().unwrap();
     }
 
@@ -1657,8 +1856,11 @@ mod tests {
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             let after_begin = std::fs::metadata(&wal_p).unwrap().len();
             w.append(&WalRecord::PageWrite {
-                pgno: 1, page_version: 1, frame: Box::new([0u8; PAGE_SIZE]),
-            }).unwrap();
+                pgno: 1,
+                page_version: 1,
+                frame: Box::new([0u8; PAGE_SIZE]),
+            })
+            .unwrap();
             w.sync().unwrap();
             // Truncate 30 bytes into the PageWrite record (well before its CRC).
             let f = OpenOptions::new().write(true).open(&wal_p).unwrap();
@@ -1680,8 +1882,11 @@ mod tests {
             let mut w = WalWriter::create(&wal_p).unwrap();
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             w.append(&WalRecord::PageWrite {
-                pgno: 1, page_version: 1, frame: Box::new([0u8; PAGE_SIZE]),
-            }).unwrap();
+                pgno: 1,
+                page_version: 1,
+                frame: Box::new([0u8; PAGE_SIZE]),
+            })
+            .unwrap();
             // Intentionally omit Commit.
             w.sync().unwrap();
         }
@@ -1701,8 +1906,11 @@ mod tests {
             let mut w = WalWriter::create(&wal_p).unwrap();
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             w.append(&WalRecord::PageWrite {
-                pgno: 1, page_version: 1, frame: Box::new([0u8; PAGE_SIZE]),
-            }).unwrap();
+                pgno: 1,
+                page_version: 1,
+                frame: Box::new([0u8; PAGE_SIZE]),
+            })
+            .unwrap();
             let after_page_write = std::fs::metadata(&wal_p).unwrap().len();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
@@ -1732,19 +1940,27 @@ mod tests {
             let mut w = WalWriter::create(&wal_p).unwrap();
             w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
             w.append(&WalRecord::PageWrite {
-                pgno: 1, page_version: 1, frame: Box::new([0xABu8; PAGE_SIZE]),
-            }).unwrap();
+                pgno: 1,
+                page_version: 1,
+                frame: Box::new([0xABu8; PAGE_SIZE]),
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
         let wal_size_before = std::fs::metadata(&wal_p).unwrap().len();
         // db_p does not exist → recover() fails → checkpoint() must propagate the error.
         let result = checkpoint(&db_p, &wal_p);
-        assert!(result.is_err(), "checkpoint must fail when db file is missing");
+        assert!(
+            result.is_err(),
+            "checkpoint must fail when db file is missing"
+        );
         // WAL must be unchanged — it was not truncated.
         let wal_size_after = std::fs::metadata(&wal_p).unwrap().len();
-        assert_eq!(wal_size_before, wal_size_after,
-            "WAL must not be truncated when recover() failed");
+        assert_eq!(
+            wal_size_before, wal_size_after,
+            "WAL must not be truncated when recover() failed"
+        );
         let _ = std::fs::remove_file(&wal_p);
     }
 
@@ -1764,7 +1980,9 @@ mod tests {
 
         {
             let mut raw = std::fs::read(&db_p).unwrap();
-            for b in &mut raw[PAGE_SIZE..PAGE_SIZE * 2] { *b = 0; }
+            for b in &mut raw[PAGE_SIZE..PAGE_SIZE * 2] {
+                *b = 0;
+            }
             std::fs::write(&db_p, &raw).unwrap();
         }
 
@@ -1775,7 +1993,8 @@ mod tests {
                 pgno: 1,
                 page_version: 1,
                 frame: Box::new(real_frame),
-            }).unwrap();
+            })
+            .unwrap();
             w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
             w.sync().unwrap();
         }
@@ -1784,14 +2003,20 @@ mod tests {
 
         recover(&db_p, &wal_p).unwrap();
 
-        let file = OpenOptions::new().read(true).write(true).open(&wal_p).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&wal_p)
+            .unwrap();
         let mut crash_file = CrashFile::new(file, CrashPhase::DuringTruncate);
         let err = truncate_wal_after_checkpoint(&mut crash_file).unwrap_err();
         assert!(matches!(err, TosumuError::Io(io) if io.kind() == ErrorKind::BrokenPipe));
 
         let wal_size_after = std::fs::metadata(&wal_p).unwrap().len();
-        assert_eq!(wal_size_before, wal_size_after,
-            "WAL must remain intact when truncate crashes after recovery succeeded");
+        assert_eq!(
+            wal_size_before, wal_size_after,
+            "WAL must remain intact when truncate crashes after recovery succeeded"
+        );
 
         let t = BTree::open(&db_p).unwrap();
         assert_eq!(t.get(b"base_key").unwrap(), Some(b"base_val".to_vec()));

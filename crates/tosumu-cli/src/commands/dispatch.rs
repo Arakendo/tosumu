@@ -1,12 +1,8 @@
 use tosumu_core::error::TosumuError;
 
 use super::inspect::{
-    cmd_inspect_header_json,
-    cmd_inspect_page_json,
-    cmd_inspect_pages_json,
-    cmd_inspect_protectors_json,
-    cmd_inspect_tree_json,
-    cmd_inspect_verify_json,
+    cmd_inspect_header_json, cmd_inspect_page_json, cmd_inspect_pages_json,
+    cmd_inspect_protectors_json, cmd_inspect_tree_json, cmd_inspect_verify_json,
     cmd_inspect_wal_json,
 };
 use super::protector::{run_protector_action, run_rekey_kek};
@@ -49,7 +45,9 @@ pub(crate) fn run(cli: Cli) -> Result<RunOutcome, CliError> {
         Command::Stat { path } => run_stat(&path)?,
         Command::Dump { path, page } => cmd_dump(&path, page, None, false)?,
         Command::Hex { path, page } => cmd_hex(&path, page)?,
-        Command::Verify { path, explain } => return Ok(cmd_verify(&path, explain, None, false)?.into()),
+        Command::Verify { path, explain } => {
+            return Ok(cmd_verify(&path, explain, None, false)?.into())
+        }
         Command::View { path, watch } => crate::view::run(&path, watch)?,
         Command::Inspect { action } => return run_inspect_action(action),
         Command::Backup { src, dest } => cmd_backup(&src, &dest)?,
@@ -71,10 +69,7 @@ fn run_inspect_action(action: InspectAction) -> Result<RunOutcome, CliError> {
         InspectAction::Verify { path, json, unlock } => {
             let (unlock, no_prompt) = resolve_inspect_unlock(unlock)?;
             if json.json {
-                println!(
-                    "{}",
-                    cmd_inspect_verify_json(&path, unlock, no_prompt)?
-                );
+                println!("{}", cmd_inspect_verify_json(&path, unlock, no_prompt)?);
             } else {
                 return Ok(cmd_verify(&path, false, unlock, no_prompt)?.into());
             }
@@ -88,13 +83,15 @@ fn run_inspect_action(action: InspectAction) -> Result<RunOutcome, CliError> {
             let pages_json = cmd_inspect_pages_json(&path, unlock, no_prompt)?;
             println!("{pages_json}");
         }
-        InspectAction::Page { path, page, json, unlock } => {
+        InspectAction::Page {
+            path,
+            page,
+            json,
+            unlock,
+        } => {
             let (unlock, no_prompt) = resolve_inspect_unlock(unlock)?;
             if json.json {
-                println!(
-                    "{}",
-                    cmd_inspect_page_json(&path, page, unlock, no_prompt)?
-                );
+                println!("{}", cmd_inspect_page_json(&path, page, unlock, no_prompt)?);
             } else {
                 cmd_dump(&path, Some(page), unlock, no_prompt)?;
             }
@@ -141,21 +138,29 @@ fn read_secret_from_stdin(
     Ok(secret)
 }
 
-fn resolve_inspect_unlock(unlock: InspectUnlockArgs) -> Result<(Option<UnlockSecret>, bool), CliError> {
+fn resolve_inspect_unlock(
+    unlock: InspectUnlockArgs,
+) -> Result<(Option<UnlockSecret>, bool), CliError> {
     let no_prompt = unlock.no_prompt;
 
     if unlock.stdin_passphrase {
-        return Ok((Some(UnlockSecret::Passphrase(read_secret_from_stdin(
-            "stdin_passphrase",
-            "passphrase",
-        )?)), no_prompt));
+        return Ok((
+            Some(UnlockSecret::Passphrase(read_secret_from_stdin(
+                "stdin_passphrase",
+                "passphrase",
+            )?)),
+            no_prompt,
+        ));
     }
 
     if unlock.stdin_recovery_key {
-        return Ok((Some(UnlockSecret::RecoveryKey(read_secret_from_stdin(
-            "stdin_recovery_key",
-            "recovery key",
-        )?)), no_prompt));
+        return Ok((
+            Some(UnlockSecret::RecoveryKey(read_secret_from_stdin(
+                "stdin_recovery_key",
+                "recovery key",
+            )?)),
+            no_prompt,
+        ));
     }
 
     if let Some(keyfile) = unlock.keyfile {

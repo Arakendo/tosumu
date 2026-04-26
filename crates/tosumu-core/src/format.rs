@@ -19,15 +19,14 @@ pub const MIN_READER_VERSION: u16 = 1;
 // ── Page frame layout (§5.3) ──────────────────────────────────────────────────
 
 pub const NONCE_SIZE: usize = 12;
-pub const PAGE_VERSION_OFFSET: usize = NONCE_SIZE;                     // 12
+pub const PAGE_VERSION_OFFSET: usize = NONCE_SIZE; // 12
 pub const PAGE_VERSION_SIZE: usize = 8;
 /// Offset of the plaintext `page_type` byte in the frame header.
 pub const PAGE_FRAME_TYPE_OFFSET: usize = NONCE_SIZE + PAGE_VERSION_SIZE; // 20
 /// Reserved bytes after `page_type` (pad to 4-byte alignment before ciphertext).
 pub const PAGE_FRAME_RESERVED_SIZE: usize = 3;
 /// Offset where ciphertext (+ tag) begins.
-pub const CIPHERTEXT_OFFSET: usize =
-    NONCE_SIZE + PAGE_VERSION_SIZE + 1 + PAGE_FRAME_RESERVED_SIZE;    // 24
+pub const CIPHERTEXT_OFFSET: usize = NONCE_SIZE + PAGE_VERSION_SIZE + 1 + PAGE_FRAME_RESERVED_SIZE; // 24
 pub const TAG_SIZE: usize = 16;
 /// Plaintext bytes available inside one page frame.
 pub const PAGE_PLAINTEXT_SIZE: usize = PAGE_SIZE - CIPHERTEXT_OFFSET - TAG_SIZE;
@@ -41,17 +40,17 @@ pub const PAGE_HEADER_SIZE: usize = 22;
 pub const SLOT_SIZE: usize = 4;
 
 // Offsets within the decrypted page plaintext (page header fields).
-pub const PAGE_OFF_TYPE: usize = 0;        // u8:  page type discriminant
-pub const PAGE_OFF_FLAGS: usize = 1;       // u8:  per-page flags (reserved, zero for now)
-pub const PAGE_OFF_SLOT_COUNT: usize = 2;  // u16: number of live + tombstone slot entries
-pub const PAGE_OFF_FREE_START: usize = 4;  // u16: first free byte offset (grows up from header)
-pub const PAGE_OFF_FREE_END: usize = 6;    // u16: first used heap byte offset (grows down)
-// [8..10]  fragmented_bytes u16 — wasted bytes from in-place tombstoning
-// [10..14] reserved (two u16 fields, zero)
-pub const PAGE_OFF_LEFTMOST: usize = 14;   // u64: dual-purpose:
-                                            //      leaf  → pgno of next leaf in chain (0 = tail)
-                                            //      internal → pgno of leftmost child
-// [22]     first byte of the slot array / heap body
+pub const PAGE_OFF_TYPE: usize = 0; // u8:  page type discriminant
+pub const PAGE_OFF_FLAGS: usize = 1; // u8:  per-page flags (reserved, zero for now)
+pub const PAGE_OFF_SLOT_COUNT: usize = 2; // u16: number of live + tombstone slot entries
+pub const PAGE_OFF_FREE_START: usize = 4; // u16: first free byte offset (grows up from header)
+pub const PAGE_OFF_FREE_END: usize = 6; // u16: first used heap byte offset (grows down)
+                                        // [8..10]  fragmented_bytes u16 — wasted bytes from in-place tombstoning
+                                        // [10..14] reserved (two u16 fields, zero)
+pub const PAGE_OFF_LEFTMOST: usize = 14; // u64: dual-purpose:
+                                         //      leaf  → pgno of next leaf in chain (0 = tail)
+                                         //      internal → pgno of leftmost child
+                                         // [22]     first byte of the slot array / heap body
 
 /// Available bytes for the slot array + heap combined.
 pub const PAGE_BODY_USABLE: usize = PAGE_PLAINTEXT_SIZE - PAGE_HEADER_SIZE; // 4034
@@ -80,27 +79,27 @@ pub const FILE_HEADER_MAC_SIZE: usize = 32;
 pub const FILE_HEADER_SIZE: usize = FILE_HEADER_PLAIN_LEN + FILE_HEADER_MAC_SIZE; // 136
 
 // Offsets within page 0 (all LE integers).
-pub const OFF_MAGIC: usize = 0;          // [u8; 16] = 8-byte tag + 8-byte NUL padding
+pub const OFF_MAGIC: usize = 0; // [u8; 16] = 8-byte tag + 8-byte NUL padding
 pub const OFF_FORMAT_VERSION: usize = 16; // u16
-pub const OFF_PAGE_SIZE: usize = 18;      // u16
+pub const OFF_PAGE_SIZE: usize = 18; // u16
 pub const OFF_MIN_READER_VERSION: usize = 20; // u16
-pub const OFF_FLAGS: usize = 22;          // u16  bit0=reserved(1), bit1=has_keyslots
-pub const OFF_PAGE_COUNT: usize = 24;     // u64
-pub const OFF_FREELIST_HEAD: usize = 32;  // u64
-pub const OFF_ROOT_PAGE: usize = 40;      // u64  (B+ tree root, Stage 2)
+pub const OFF_FLAGS: usize = 22; // u16  bit0=reserved(1), bit1=has_keyslots
+pub const OFF_PAGE_COUNT: usize = 24; // u64
+pub const OFF_FREELIST_HEAD: usize = 32; // u64
+pub const OFF_ROOT_PAGE: usize = 40; // u64  (B+ tree root, Stage 2)
 pub const OFF_WAL_CHECKPOINT_LSN: usize = 48; // u64
-pub const OFF_DEK_ID: usize = 56;         // u64
-pub const OFF_DEK_KAT: usize = 64;        // [u8; 16]
-pub const OFF_KEYSLOT_COUNT: usize = 80;  // u16
+pub const OFF_DEK_ID: usize = 56; // u64
+pub const OFF_DEK_KAT: usize = 64; // [u8; 16]
+pub const OFF_KEYSLOT_COUNT: usize = 80; // u16
 /// Number of data-pages after page 0 that hold the keyslot region.
 /// Format v1 MVP: always 0 — keyslots are embedded in page 0 starting at
 /// KEYSLOT_REGION_OFFSET. This field is written as 0 and must be treated as
 /// "no external keyslot pages" (not "no keyslots exist"). Future formats may
 /// spill keyslots into dedicated overflow pages and increment this counter.
 pub const OFF_KEYSLOT_REGION_PAGES: usize = 82; // u16
-// [84..104] reserved, zero
-pub const OFF_HEADER_MAC: usize = 104;    // [u8; 32]
-// [136..4096] keyslot region (format v1: up to MAX_KEYSLOTS embedded here)
+                                                // [84..104] reserved, zero
+pub const OFF_HEADER_MAC: usize = 104; // [u8; 32]
+                                       // [136..4096] keyslot region (format v1: up to MAX_KEYSLOTS embedded here)
 
 // ── Keyslot layout (§8.7) ─────────────────────────────────────────────────────
 
@@ -111,18 +110,18 @@ pub const KEYSLOT_SIZE: usize = 256;
 pub const KEYSLOT_REGION_OFFSET: usize = FILE_HEADER_SIZE; // 136
 
 // Offsets within one keyslot.
-pub const KS_OFF_KIND: usize = 0;         // u8: 0=Empty,1=Sentinel,2=Passphrase,...
-pub const KS_OFF_VERSION: usize = 1;      // u8
-pub const KS_OFF_FLAGS: usize = 2;        // u16
+pub const KS_OFF_KIND: usize = 0; // u8: 0=Empty,1=Sentinel,2=Passphrase,...
+pub const KS_OFF_VERSION: usize = 1; // u8
+pub const KS_OFF_FLAGS: usize = 2; // u16
 pub const KS_OFF_CREATED_UNIX: usize = 4; // u32
-pub const KS_OFF_DEK_ID: usize = 8;       // u64
-pub const KS_OFF_SALT: usize = 16;        // [u8; 16]
-pub const KS_OFF_KDF_PARAMS: usize = 32;  // [u8; 32]
-pub const KS_OFF_TPM_POLICY: usize = 64;  // [u8; 32]
-pub const KS_OFF_WRAP_NONCE: usize = 96;  // [u8; 12]
+pub const KS_OFF_DEK_ID: usize = 8; // u64
+pub const KS_OFF_SALT: usize = 16; // [u8; 16]
+pub const KS_OFF_KDF_PARAMS: usize = 32; // [u8; 32]
+pub const KS_OFF_TPM_POLICY: usize = 64; // [u8; 32]
+pub const KS_OFF_WRAP_NONCE: usize = 96; // [u8; 12]
 pub const KS_OFF_WRAPPED_DEK: usize = 108; // [u8; WRAPPED_DEK_SIZE] — for Sentinel: first DEK_SIZE bytes = plaintext DEK
-pub const KS_OFF_KCV: usize = 156;        // [u8; 32] — AEAD over known-plaintext under KEK
-// [188..256] reserved, zero-filled
+pub const KS_OFF_KCV: usize = 156; // [u8; 32] — AEAD over known-plaintext under KEK
+                                   // [188..256] reserved, zero-filled
 
 /// Raw DEK length in bytes.
 pub const DEK_SIZE: usize = 32;

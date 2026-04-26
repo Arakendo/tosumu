@@ -159,10 +159,12 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
         }
 
         let mut key = vec![0u8; key_len];
-        reader.read_exact(&mut key).map_err(|_| TosumuError::CorruptRecord {
-            offset: record_start + 8,
-            reason: "unexpected EOF reading key",
-        })?;
+        reader
+            .read_exact(&mut key)
+            .map_err(|_| TosumuError::CorruptRecord {
+                offset: record_start + 8,
+                reason: "unexpected EOF reading key",
+            })?;
 
         if val_len_raw == DELETE_SENTINEL {
             map.remove(&key);
@@ -175,15 +177,23 @@ fn replay(file: &File) -> Result<HashMap<Vec<u8>, Vec<u8>>> {
                 });
             }
             let mut value = vec![0u8; val_len];
-            reader.read_exact(&mut value).map_err(|_| TosumuError::CorruptRecord {
-                offset: record_start + 8 + key_len as u64,
-                reason: "unexpected EOF reading value",
-            })?;
+            reader
+                .read_exact(&mut value)
+                .map_err(|_| TosumuError::CorruptRecord {
+                    offset: record_start + 8 + key_len as u64,
+                    reason: "unexpected EOF reading value",
+                })?;
             map.insert(key, value);
         }
 
-        offset = record_start + 8 + key_len as u64
-            + if val_len_raw == DELETE_SENTINEL { 0 } else { val_len_raw as u64 };
+        offset = record_start
+            + 8
+            + key_len as u64
+            + if val_len_raw == DELETE_SENTINEL {
+                0
+            } else {
+                val_len_raw as u64
+            };
     }
 
     Ok(map)

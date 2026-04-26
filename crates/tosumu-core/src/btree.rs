@@ -64,7 +64,10 @@ pub struct BTree {
 impl BTree {
     fn from_open_pager(pager: Pager) -> Result<Self> {
         if pager.root_page() == 0 {
-            return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0 — not a BTree file" });
+            return Err(TosumuError::Corrupt {
+                pgno: 0,
+                reason: "root_page is 0 — not a BTree file",
+            });
         }
         Ok(BTree { pager })
     }
@@ -128,7 +131,8 @@ impl BTree {
     /// Look up `key`. Returns `Some(value)` if found and live, `None` otherwise.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let leaf_pgno = self.find_leaf(key)?;
-        self.pager.with_page(leaf_pgno, |page| leaf_get(page, leaf_pgno, key))
+        self.pager
+            .with_page(leaf_pgno, |page| leaf_get(page, leaf_pgno, key))
     }
 
     /// Insert or update `key` → `value`.
@@ -137,10 +141,14 @@ impl BTree {
             return Err(TosumuError::InvalidArgument("key must not be empty"));
         }
         if key.len() > u16::MAX as usize {
-            return Err(TosumuError::InvalidArgument("key exceeds u16 maximum length"));
+            return Err(TosumuError::InvalidArgument(
+                "key exceeds u16 maximum length",
+            ));
         }
         if value.len() > u16::MAX as usize {
-            return Err(TosumuError::InvalidArgument("value exceeds u16 maximum length"));
+            return Err(TosumuError::InvalidArgument(
+                "value exceeds u16 maximum length",
+            ));
         }
         let record = encode_live(key, value);
         let root = self.pager.root_page();
@@ -174,12 +182,13 @@ impl BTree {
 
         let tomb = encode_tombstone(key);
         let needed = SLOT_SIZE + tomb.len();
-        let fits = self.pager.with_page(leaf_pgno, |page| {
-            Ok(leaf_free_space(page) >= needed)
-        })?;
+        let fits = self
+            .pager
+            .with_page(leaf_pgno, |page| Ok(leaf_free_space(page) >= needed))?;
 
         if fits {
-            self.pager.with_page_mut(leaf_pgno, |page| leaf_slot_append(page, &tomb))
+            self.pager
+                .with_page_mut(leaf_pgno, |page| leaf_slot_append(page, &tomb))
         } else {
             // Compact: rewrite leaf without the deleted key.
             let (mut live, next) = self.pager.with_page(leaf_pgno, |page| {
@@ -188,9 +197,8 @@ impl BTree {
                 Ok((live, next))
             })?;
             live.retain(|(k, _)| k.as_slice() != key);
-            self.pager.with_page_mut(leaf_pgno, |page| {
-                leaf_rewrite(page, next, &live)
-            })
+            self.pager
+                .with_page_mut(leaf_pgno, |page| leaf_rewrite(page, next, &live))
         }
     }
 
@@ -224,7 +232,9 @@ impl BTree {
                     results.insert(k, v);
                 }
             }
-            if next == 0 || past_end { break; }
+            if next == 0 || past_end {
+                break;
+            }
             cursor = next;
         }
 
@@ -250,10 +260,12 @@ impl BTree {
                     // OVERFLOW and FREE are defined types (Stage 2+); treat
                     // them the same as INTERNAL for forward-compatibility.
                     PAGE_TYPE_INTERNAL | PAGE_TYPE_OVERFLOW | PAGE_TYPE_FREE => return Ok(()),
-                    _ => return Err(TosumuError::Corrupt {
-                        pgno,
-                        reason: "unknown page type in physical scan",
-                    }),
+                    _ => {
+                        return Err(TosumuError::Corrupt {
+                            pgno,
+                            reason: "unknown page type in physical scan",
+                        })
+                    }
                 }
                 // Validate slot array bounds before reading any record data.
                 // After this returns Ok, every slot's off+len is within
@@ -267,7 +279,9 @@ impl BTree {
                     let len = read_u16(page, slot_pos + 2) as usize;
                     // Bounds already verified by inv_check_slots.
                     let rec = &page[off..off + len];
-                    if rec.is_empty() { continue; }
+                    if rec.is_empty() {
+                        continue;
+                    }
                     match rec[0] {
                         RECORD_LIVE if rec.len() >= 5 => {
                             let kl = u16::from_le_bytes([rec[1], rec[2]]) as usize;
@@ -291,20 +305,31 @@ impl BTree {
                 Ok(())
             })?;
         }
-        Ok(map.into_iter().filter_map(|(k, v)| v.map(|val| (k, val))).collect())
+        Ok(map
+            .into_iter()
+            .filter_map(|(k, v)| v.map(|val| (k, val)))
+            .collect())
     }
 
     /// Return the current page count (header page + data pages).
-    pub fn page_count(&self) -> u64 { self.pager.page_count() }
+    pub fn page_count(&self) -> u64 {
+        self.pager.page_count()
+    }
 
     /// Return the root page number.
-    pub fn root_page(&self) -> u64 { self.pager.root_page() }
+    pub fn root_page(&self) -> u64 {
+        self.pager.root_page()
+    }
 
     /// Begin a write transaction on the underlying pager.
-    pub(crate) fn begin_txn(&mut self) -> Result<()> { self.pager.begin_txn() }
+    pub(crate) fn begin_txn(&mut self) -> Result<()> {
+        self.pager.begin_txn()
+    }
 
     /// Commit the current transaction (fsync WAL + flush dirty pages to .tsm).
-    pub(crate) fn commit_txn(&mut self) -> Result<()> { self.pager.commit_txn() }
+    pub(crate) fn commit_txn(&mut self) -> Result<()> {
+        self.pager.commit_txn()
+    }
 
     #[cfg(test)]
     pub(crate) fn commit_txn_with_crash_file(
@@ -315,7 +340,9 @@ impl BTree {
     }
 
     /// Roll back the current transaction (discard dirty pages).
-    pub(crate) fn rollback_txn(&mut self) { self.pager.rollback_txn() }
+    pub(crate) fn rollback_txn(&mut self) {
+        self.pager.rollback_txn()
+    }
 
     /// Walk from the root to the leftmost leaf and return the height (1 = single leaf).
     pub fn tree_height(&self) -> Result<usize> {
@@ -324,15 +351,25 @@ impl BTree {
         let mut h = 1;
         loop {
             if h > MAX_DEPTH {
-                return Err(TosumuError::Corrupt { pgno, reason: "tree height exceeds maximum (cycle suspected)" });
+                return Err(TosumuError::Corrupt {
+                    pgno,
+                    reason: "tree height exceeds maximum (cycle suspected)",
+                });
             }
             let page_count = self.pager.page_count();
             if pgno == 0 || pgno >= page_count {
-                return Err(TosumuError::Corrupt { pgno, reason: "internal page has out-of-range leftmost child" });
+                return Err(TosumuError::Corrupt {
+                    pgno,
+                    reason: "internal page has out-of-range leftmost child",
+                });
             }
             let page_type = self.pager.with_page(pgno, |page| Ok(page[HDR_PAGE_TYPE]))?;
-            if page_type == PAGE_TYPE_LEAF { return Ok(h); }
-            pgno = self.pager.with_page(pgno, |page| Ok(read_u64(page, HDR_LEFTMOST)))?;
+            if page_type == PAGE_TYPE_LEAF {
+                return Ok(h);
+            }
+            pgno = self
+                .pager
+                .with_page(pgno, |page| Ok(read_u64(page, HDR_LEFTMOST)))?;
             h += 1;
         }
     }
@@ -347,19 +384,32 @@ impl BTree {
         loop {
             depth += 1;
             if depth > MAX_DEPTH {
-                return Err(TosumuError::Corrupt { pgno, reason: "traversal depth exceeds maximum (cycle suspected)" });
+                return Err(TosumuError::Corrupt {
+                    pgno,
+                    reason: "traversal depth exceeds maximum (cycle suspected)",
+                });
             }
             let page_count = self.pager.page_count();
             if pgno == 0 || pgno >= page_count {
-                return Err(TosumuError::Corrupt { pgno, reason: "traversal reached out-of-range page number" });
+                return Err(TosumuError::Corrupt {
+                    pgno,
+                    reason: "traversal reached out-of-range page number",
+                });
             }
             let page_type = self.pager.with_page(pgno, |page| Ok(page[HDR_PAGE_TYPE]))?;
             match page_type {
                 PAGE_TYPE_LEAF => return Ok(pgno),
                 PAGE_TYPE_INTERNAL => {
-                    pgno = self.pager.with_page(pgno, |page| internal_find_child(page, pgno, key))?;
+                    pgno = self
+                        .pager
+                        .with_page(pgno, |page| internal_find_child(page, pgno, key))?;
                 }
-                _ => return Err(TosumuError::Corrupt { pgno, reason: "unexpected page type during traversal" }),
+                _ => {
+                    return Err(TosumuError::Corrupt {
+                        pgno,
+                        reason: "unexpected page type during traversal",
+                    })
+                }
             }
         }
     }
@@ -379,16 +429,21 @@ impl BTree {
 
         if page_type == PAGE_TYPE_LEAF {
             let needed = SLOT_SIZE + record.len();
-            let fits = self.pager.with_page(pgno, |page| Ok(leaf_free_space(page) >= needed))?;
+            let fits = self
+                .pager
+                .with_page(pgno, |page| Ok(leaf_free_space(page) >= needed))?;
             if fits {
-                self.pager.with_page_mut(pgno, |page| leaf_slot_append(page, record))?;
+                self.pager
+                    .with_page_mut(pgno, |page| leaf_slot_append(page, record))?;
                 return Ok(None);
             }
             return self.split_leaf(pgno, sort_key, record);
         }
 
         // Internal page: recurse into the child that covers sort_key.
-        let child_pgno = self.pager.with_page(pgno, |page| internal_find_child(page, pgno, sort_key))?;
+        let child_pgno = self
+            .pager
+            .with_page(pgno, |page| internal_find_child(page, pgno, sort_key))?;
         let split = self.insert_record(child_pgno, sort_key, record)?;
 
         let Some((promoted_key, new_child)) = split else {
@@ -397,9 +452,13 @@ impl BTree {
 
         // Absorb the split into this internal page.
         let needed = SLOT_SIZE + INTERNAL_RECORD_OVERHEAD + promoted_key.len();
-        let fits = self.pager.with_page(pgno, |page| Ok(leaf_free_space(page) >= needed))?;
+        let fits = self
+            .pager
+            .with_page(pgno, |page| Ok(leaf_free_space(page) >= needed))?;
         if fits {
-            self.pager.with_page_mut(pgno, |page| internal_slot_insert_sorted(page, &promoted_key, new_child))?;
+            self.pager.with_page_mut(pgno, |page| {
+                internal_slot_insert_sorted(page, &promoted_key, new_child)
+            })?;
             return Ok(None);
         }
         self.split_internal(pgno, &promoted_key, new_child)
@@ -410,7 +469,12 @@ impl BTree {
     /// Split a full leaf page. Inserts `new_record` (keyed by `sort_key`) among the existing
     /// records, redistributes into left/right halves, links the new leaf, and returns the
     /// split key to promote.
-    fn split_leaf(&mut self, pgno: u64, sort_key: &[u8], new_record: &[u8]) -> Result<Option<(Vec<u8>, u64)>> {
+    fn split_leaf(
+        &mut self,
+        pgno: u64,
+        sort_key: &[u8],
+        new_record: &[u8],
+    ) -> Result<Option<(Vec<u8>, u64)>> {
         // Collect all live records from the old leaf (LWW-deduplicated).
         let (mut records, old_next) = self.pager.with_page(pgno, |page| {
             Ok((leaf_read_all_live(page), read_u64(page, HDR_LEFTMOST)))
@@ -439,7 +503,10 @@ impl BTree {
         }
 
         if records.is_empty() {
-            return Err(TosumuError::Corrupt { pgno, reason: "split produced empty leaf" });
+            return Err(TosumuError::Corrupt {
+                pgno,
+                reason: "split produced empty leaf",
+            });
         }
 
         let mid = records.len() / 2;
@@ -448,15 +515,13 @@ impl BTree {
         // Allocate new leaf, write right half into it.
         let new_pgno = self.pager.allocate(PAGE_TYPE_LEAF)?;
         let right: Vec<_> = records[mid..].to_vec();
-        self.pager.with_page_mut(new_pgno, |page| {
-            leaf_rewrite(page, old_next, &right)
-        })?;
+        self.pager
+            .with_page_mut(new_pgno, |page| leaf_rewrite(page, old_next, &right))?;
 
         // Rewrite left half into old page; link it to new leaf.
         let left: Vec<_> = records[..mid].to_vec();
-        self.pager.with_page_mut(pgno, |page| {
-            leaf_rewrite(page, new_pgno, &left)
-        })?;
+        self.pager
+            .with_page_mut(pgno, |page| leaf_rewrite(page, new_pgno, &left))?;
 
         Ok(Some((split_key, new_pgno)))
     }
@@ -464,11 +529,16 @@ impl BTree {
     /// Split a full internal page after absorbing a child split.
     ///
     /// After the split, the promoted key rises further up (or creates a new root).
-    fn split_internal(&mut self, pgno: u64, new_sep: &[u8], new_child: u64) -> Result<Option<(Vec<u8>, u64)>> {
+    fn split_internal(
+        &mut self,
+        pgno: u64,
+        new_sep: &[u8],
+        new_child: u64,
+    ) -> Result<Option<(Vec<u8>, u64)>> {
         // Collect all (sep_key, right_child) + leftmost_child from old page.
-        let (mut entries, leftmost) = self.pager.with_page(pgno, |page| {
-            Ok(internal_read_all(page))
-        })?;
+        let (mut entries, leftmost) = self
+            .pager
+            .with_page(pgno, |page| Ok(internal_read_all(page)))?;
 
         // Append new separator then sort: produces a sorted entry list for mid-split.
         entries.push((new_sep.to_vec(), new_child));
@@ -532,11 +602,17 @@ impl BTree {
     pub fn check_invariants(&self) -> Result<()> {
         let root = self.pager.root_page();
         if root == 0 {
-            return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0" });
+            return Err(TosumuError::Corrupt {
+                pgno: 0,
+                reason: "root_page is 0",
+            });
         }
         let root_type = self.pager.with_page(root, |p| Ok(p[HDR_PAGE_TYPE]))?;
         if root_type != PAGE_TYPE_LEAF && root_type != PAGE_TYPE_INTERNAL {
-            return Err(TosumuError::Corrupt { pgno: root, reason: "root has unexpected page type" });
+            return Err(TosumuError::Corrupt {
+                pgno: root,
+                reason: "root has unexpected page type",
+            });
         }
         self.inv_check_subtree(root)?;
         self.inv_check_leaf_chain(root)?;
@@ -547,10 +623,7 @@ impl BTree {
     ///
     /// Returns `(min_live_key, max_live_key, depth)` where min/max are `None`
     /// when the subtree contains no live keys, and depth is 1 at a leaf.
-    fn inv_check_subtree(
-        &self,
-        pgno: u64,
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, usize)> {
+    fn inv_check_subtree(&self, pgno: u64) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, usize)> {
         let page_type = self.pager.with_page(pgno, |p| Ok(p[HDR_PAGE_TYPE]))?;
         match page_type {
             PAGE_TYPE_LEAF => {
@@ -623,7 +696,8 @@ impl BTree {
                 // Recurse into right children.
                 for i in 0..entries.len() {
                     let (sep_key, right_child) = &entries[i];
-                    let (child_min, child_max, child_depth) = self.inv_check_subtree(*right_child)?;
+                    let (child_min, child_max, child_depth) =
+                        self.inv_check_subtree(*right_child)?;
                     if child_depth != depth {
                         return Err(TosumuError::Corrupt {
                             pgno,
@@ -645,7 +719,8 @@ impl BTree {
                             if max_k.as_slice() >= next_sep.0.as_slice() {
                                 return Err(TosumuError::Corrupt {
                                     pgno,
-                                    reason: "right subtree max key >= next separator (routing error)",
+                                    reason:
+                                        "right subtree max key >= next separator (routing error)",
                                 });
                             }
                         }
@@ -683,15 +758,22 @@ impl BTree {
         let mut pgno = root;
         loop {
             let page_type = self.pager.with_page(pgno, |p| Ok(p[HDR_PAGE_TYPE]))?;
-            if page_type == PAGE_TYPE_LEAF { break; }
-            pgno = self.pager.with_page(pgno, |p| Ok(read_u64(p, HDR_LEFTMOST)))?;
+            if page_type == PAGE_TYPE_LEAF {
+                break;
+            }
+            pgno = self
+                .pager
+                .with_page(pgno, |p| Ok(read_u64(p, HDR_LEFTMOST)))?;
         }
         let mut seen: std::collections::HashSet<Vec<u8>> = Default::default();
         let mut seen_pages: std::collections::HashSet<u64> = Default::default();
         let mut prev_max: Option<Vec<u8>> = None;
         loop {
             if !seen_pages.insert(pgno) {
-                return Err(TosumuError::Corrupt { pgno, reason: "cycle detected in leaf chain" });
+                return Err(TosumuError::Corrupt {
+                    pgno,
+                    reason: "cycle detected in leaf chain",
+                });
             }
             let (live_keys, next) = self.pager.with_page(pgno, |page| {
                 if page[HDR_PAGE_TYPE] != PAGE_TYPE_LEAF {
@@ -723,7 +805,9 @@ impl BTree {
                 }
             }
             prev_max = live_keys.last().cloned();
-            if next == 0 { break; }
+            if next == 0 {
+                break;
+            }
             pgno = next;
         }
         Ok(())
@@ -752,18 +836,28 @@ fn internal_find_child(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, key: &[u8]) 
 }
 
 /// Read the i-th internal slot: returns (separator_key, right_child_pgno).
-fn read_internal_slot(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, i: usize) -> Result<(Vec<u8>, u64)> {
+fn read_internal_slot(
+    page: &[u8; PAGE_PLAINTEXT_SIZE],
+    pgno: u64,
+    i: usize,
+) -> Result<(Vec<u8>, u64)> {
     let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
     let off = read_u16(page, slot_pos) as usize;
     let len = read_u16(page, slot_pos + 2) as usize;
     if off + len > PAGE_PLAINTEXT_SIZE || len < INTERNAL_RECORD_OVERHEAD {
-        return Err(TosumuError::Corrupt { pgno, reason: "invalid internal slot" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "invalid internal slot",
+        });
     }
     let rec = &page[off..off + len];
     let right_child = u64::from_le_bytes(rec[0..8].try_into().unwrap());
     let key_len = u16::from_le_bytes([rec[8], rec[9]]) as usize;
     if 10 + key_len > len {
-        return Err(TosumuError::Corrupt { pgno, reason: "internal slot key overflow" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "internal slot key overflow",
+        });
     }
     Ok((rec[10..10 + key_len].to_vec(), right_child))
 }
@@ -784,7 +878,11 @@ fn internal_read_all(page: &[u8; PAGE_PLAINTEXT_SIZE]) -> (Vec<(Vec<u8>, u64)>, 
 /// Append a separator slot `(sep_key, right_child)` to an internal page.
 ///
 /// Used only in bulk-rewrite paths where entries are already sorted.
-fn internal_slot_append(page: &mut [u8; PAGE_PLAINTEXT_SIZE], sep_key: &[u8], right_child: u64) -> Result<()> {
+fn internal_slot_append(
+    page: &mut [u8; PAGE_PLAINTEXT_SIZE],
+    sep_key: &[u8],
+    right_child: u64,
+) -> Result<()> {
     let mut rec = Vec::with_capacity(INTERNAL_RECORD_OVERHEAD + sep_key.len());
     rec.extend_from_slice(&right_child.to_le_bytes());
     rec.extend_from_slice(&(sep_key.len() as u16).to_le_bytes());
@@ -796,7 +894,11 @@ fn internal_slot_append(page: &mut [u8; PAGE_PLAINTEXT_SIZE], sep_key: &[u8], ri
 ///
 /// Reads all existing entries, inserts the new entry at the correct sorted position,
 /// then rewrites the page from scratch. Used when absorbing a child split.
-fn internal_slot_insert_sorted(page: &mut [u8; PAGE_PLAINTEXT_SIZE], sep_key: &[u8], right_child: u64) -> Result<()> {
+fn internal_slot_insert_sorted(
+    page: &mut [u8; PAGE_PLAINTEXT_SIZE],
+    sep_key: &[u8],
+    right_child: u64,
+) -> Result<()> {
     let (mut entries, leftmost) = internal_read_all(page);
     let pos = entries.partition_point(|(k, _)| k.as_slice() < sep_key);
     entries.insert(pos, (sep_key.to_vec(), right_child));
@@ -827,10 +929,15 @@ fn leaf_get(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, key: &[u8]) -> Result<O
         let off = read_u16(page, slot_pos) as usize;
         let len = read_u16(page, slot_pos + 2) as usize;
         if off + len > PAGE_PLAINTEXT_SIZE {
-            return Err(TosumuError::Corrupt { pgno, reason: "leaf slot out of bounds" });
+            return Err(TosumuError::Corrupt {
+                pgno,
+                reason: "leaf slot out of bounds",
+            });
         }
         let rec = &page[off..off + len];
-        if rec.is_empty() { continue; }
+        if rec.is_empty() {
+            continue;
+        }
         match rec[0] {
             RECORD_LIVE if rec.len() >= 5 => {
                 let kl = u16::from_le_bytes([rec[1], rec[2]]) as usize;
@@ -860,9 +967,13 @@ fn leaf_read_all_live(page: &[u8; PAGE_PLAINTEXT_SIZE]) -> Vec<(Vec<u8>, Vec<u8>
         let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
         let off = read_u16(page, slot_pos) as usize;
         let len = read_u16(page, slot_pos + 2) as usize;
-        if off + len > PAGE_PLAINTEXT_SIZE { continue; }
+        if off + len > PAGE_PLAINTEXT_SIZE {
+            continue;
+        }
         let rec = &page[off..off + len];
-        if rec.is_empty() { continue; }
+        if rec.is_empty() {
+            continue;
+        }
         match rec[0] {
             RECORD_LIVE if rec.len() >= 5 => {
                 let kl = u16::from_le_bytes([rec[1], rec[2]]) as usize;
@@ -883,7 +994,9 @@ fn leaf_read_all_live(page: &[u8; PAGE_PLAINTEXT_SIZE]) -> Vec<(Vec<u8>, Vec<u8>
             _ => {}
         }
     }
-    map.into_iter().filter_map(|(k, v)| v.map(|val| (k, val))).collect()
+    map.into_iter()
+        .filter_map(|(k, v)| v.map(|val| (k, val)))
+        .collect()
 }
 
 /// Append a raw record to a leaf page using the slotted-page format.
@@ -913,7 +1026,11 @@ fn leaf_slot_append(page: &mut [u8; PAGE_PLAINTEXT_SIZE], record: &[u8]) -> Resu
 /// Clear a leaf page and rewrite it with the given live records.
 ///
 /// `next` is the new value for HDR_LEFTMOST (leaf-chain pointer).
-fn leaf_rewrite(page: &mut [u8; PAGE_PLAINTEXT_SIZE], next: u64, records: &[(Vec<u8>, Vec<u8>)]) -> Result<()> {
+fn leaf_rewrite(
+    page: &mut [u8; PAGE_PLAINTEXT_SIZE],
+    next: u64,
+    records: &[(Vec<u8>, Vec<u8>)],
+) -> Result<()> {
     *page = [0u8; PAGE_PLAINTEXT_SIZE];
     page[HDR_PAGE_TYPE] = PAGE_TYPE_LEAF;
     write_u16(page, HDR_SLOT_COUNT, 0);
@@ -938,31 +1055,49 @@ fn leaf_free_space(page: &[u8; PAGE_PLAINTEXT_SIZE]) -> usize {
 
 /// Validate that all slot offset+length pairs in `page` are in-bounds.
 fn inv_check_slots(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64) -> Result<()> {
-    let slot_count  = read_u16(page, HDR_SLOT_COUNT) as usize;
-    let free_start  = read_u16(page, HDR_FREE_START) as usize;
-    let free_end    = read_u16(page, HDR_FREE_END)   as usize;
+    let slot_count = read_u16(page, HDR_SLOT_COUNT) as usize;
+    let free_start = read_u16(page, HDR_FREE_START) as usize;
+    let free_end = read_u16(page, HDR_FREE_END) as usize;
     let slot_array_end = PAGE_HEADER_SIZE + slot_count * SLOT_SIZE;
     if slot_array_end > free_start {
-        return Err(TosumuError::Corrupt { pgno, reason: "slot array end exceeds free_start" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "slot array end exceeds free_start",
+        });
     }
     if free_start > free_end {
-        return Err(TosumuError::Corrupt { pgno, reason: "free_start > free_end" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "free_start > free_end",
+        });
     }
     if free_end > PAGE_PLAINTEXT_SIZE {
-        return Err(TosumuError::Corrupt { pgno, reason: "free_end > PAGE_PLAINTEXT_SIZE" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "free_end > PAGE_PLAINTEXT_SIZE",
+        });
     }
     for i in 0..slot_count {
         let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
         let off = read_u16(page, slot_pos) as usize;
         let len = read_u16(page, slot_pos + 2) as usize;
         if len == 0 {
-            return Err(TosumuError::Corrupt { pgno, reason: "slot has zero length" });
+            return Err(TosumuError::Corrupt {
+                pgno,
+                reason: "slot has zero length",
+            });
         }
         if off < free_end {
-            return Err(TosumuError::Corrupt { pgno, reason: "slot offset below free_end (overlaps free area)" });
+            return Err(TosumuError::Corrupt {
+                pgno,
+                reason: "slot offset below free_end (overlaps free area)",
+            });
         }
         if off + len > PAGE_PLAINTEXT_SIZE {
-            return Err(TosumuError::Corrupt { pgno, reason: "slot offset+length exceeds page boundary" });
+            return Err(TosumuError::Corrupt {
+                pgno,
+                reason: "slot offset+length exceeds page boundary",
+            });
         }
     }
     Ok(())
@@ -996,10 +1131,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "tosumu_btree_{name}_{}.tsm",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("tosumu_btree_{name}_{}.tsm", std::process::id()))
     }
 
     #[test]
@@ -1097,12 +1229,16 @@ mod tests {
         for i in [0u32, 1, 100, 250, 499] {
             let k = format!("key{i:05}");
             let v = format!("val{i:05}");
-            assert_eq!(t.get(k.as_bytes()).unwrap(), Some(v.into_bytes()), "key {k}");
+            assert_eq!(
+                t.get(k.as_bytes()).unwrap(),
+                Some(v.into_bytes()),
+                "key {k}"
+            );
         }
 
         // Verify range scan returns sorted results.
         let start = b"key00100".as_ref();
-        let end   = b"key00199".as_ref();
+        let end = b"key00199".as_ref();
         let results = t.scan_by_key(start, end).unwrap();
         assert_eq!(results.len(), 100, "expected 100 results in range");
         let keys: Vec<_> = results.iter().map(|(k, _)| k.clone()).collect();
@@ -1138,9 +1274,13 @@ mod tests {
         let mut h = 1;
         loop {
             let page_type = t.pager.with_page(pgno, |page| Ok(page[HDR_PAGE_TYPE]))?;
-            if page_type == PAGE_TYPE_LEAF { break; }
+            if page_type == PAGE_TYPE_LEAF {
+                break;
+            }
             // Follow leftmost child.
-            pgno = t.pager.with_page(pgno, |page| Ok(read_u64(page, HDR_LEFTMOST)))?;
+            pgno = t
+                .pager
+                .with_page(pgno, |page| Ok(read_u64(page, HDR_LEFTMOST)))?;
             h += 1;
         }
         Ok(h)
@@ -1185,8 +1325,12 @@ mod tests {
         let rec = encode_live(b"key", b"val");
         let mut page = make_leaf_page(&[&rec]);
         // Corrupt the slot's offset field to point past the end of the page.
-        write_u16(&mut page, PAGE_HEADER_SIZE, (PAGE_PLAINTEXT_SIZE - 1) as u16); // off
-        write_u16(&mut page, PAGE_HEADER_SIZE + 2, 4u16);                          // len=4 → off+len > SIZE
+        write_u16(
+            &mut page,
+            PAGE_HEADER_SIZE,
+            (PAGE_PLAINTEXT_SIZE - 1) as u16,
+        ); // off
+        write_u16(&mut page, PAGE_HEADER_SIZE + 2, 4u16); // len=4 → off+len > SIZE
         let err = inv_check_slots(&page, 1).unwrap_err();
         assert!(matches!(err, TosumuError::Corrupt { pgno: 1, .. }));
     }
@@ -1252,7 +1396,10 @@ mod tests {
         let err = t.scan_physical().unwrap_err();
         // Any corrupt ciphertext byte → AEAD auth failure or Corrupt.
         assert!(
-            matches!(err, TosumuError::AuthFailed { .. } | TosumuError::Corrupt { .. }),
+            matches!(
+                err,
+                TosumuError::AuthFailed { .. } | TosumuError::Corrupt { .. }
+            ),
             "expected AuthFailed or Corrupt, got {err:?}",
         );
 
@@ -1262,8 +1409,8 @@ mod tests {
 
     // ── Property tests ────────────────────────────────────────────────────────
 
-    use proptest::prelude::*;
     use crate::wal::wal_path;
+    use proptest::prelude::*;
 
     #[derive(Debug, Clone)]
     enum Op {

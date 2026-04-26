@@ -20,7 +20,10 @@ pub(crate) fn run_init(path: &Path, encrypt: bool) -> Result<(), CliError> {
         println!("      integrity only — a local reader with file access can read the data.");
     } else {
         PageStore::create(path)?;
-        println!("initialized {} (sentinel protector — authentication only, no passphrase)", path.display());
+        println!(
+            "initialized {} (sentinel protector — authentication only, no passphrase)",
+            path.display()
+        );
     }
 
     Ok(())
@@ -51,7 +54,11 @@ pub(crate) fn run_delete(path: &Path, key: &str) -> Result<(), CliError> {
 pub(crate) fn run_scan(path: &Path) -> Result<(), CliError> {
     let store = open_store_readonly(path)?;
     for (key, value) in store.scan()? {
-        println!("{}\t{}", String::from_utf8_lossy(&key), String::from_utf8_lossy(&value));
+        println!(
+            "{}\t{}",
+            String::from_utf8_lossy(&key),
+            String::from_utf8_lossy(&value)
+        );
     }
     Ok(())
 }

@@ -1,11 +1,7 @@
 use super::*;
 use crate::commands::inspect::{
-    cmd_inspect_header_json,
-    cmd_inspect_page_json,
-    cmd_inspect_pages_json,
-    cmd_inspect_protectors_json,
-    cmd_inspect_tree_json,
-    cmd_inspect_verify_json,
+    cmd_inspect_header_json, cmd_inspect_page_json, cmd_inspect_pages_json,
+    cmd_inspect_protectors_json, cmd_inspect_tree_json, cmd_inspect_verify_json,
     cmd_inspect_wal_json,
 };
 use crate::error_boundary::CliError;
@@ -48,7 +44,10 @@ fn inspect_error_json_uses_structured_error_envelope() {
     assert_eq!(json["command"], "inspect.header");
     assert_eq!(json["ok"], false);
     assert!(json["error"].as_object().unwrap().get("kind").is_none());
-    assert_eq!(json["error"]["message"], "page number out of range: requested 9, page_count 4");
+    assert_eq!(
+        json["error"]["message"],
+        "page number out of range: requested 9, page_count 4"
+    );
     assert_eq!(json["error"]["code"], "INSPECT_PAGE_OUT_OF_RANGE");
     assert_eq!(json["error"]["status"], "invalid_input");
     assert_eq!(json["error"]["details"]["pgno"], 9);
@@ -70,14 +69,18 @@ fn inspect_error_json_includes_code_status_and_details() {
     assert!(json["error"].as_object().unwrap().get("kind").is_none());
     assert_eq!(json["error"]["code"], "INSPECT_PAGE_OUT_OF_RANGE");
     assert_eq!(json["error"]["status"], "invalid_input");
-    assert_eq!(json["error"]["message"], "page number out of range: requested 9, page_count 4");
+    assert_eq!(
+        json["error"]["message"],
+        "page number out of range: requested 9, page_count 4"
+    );
     assert_eq!(json["error"]["details"]["pgno"], 9);
     assert_eq!(json["error"]["details"]["page_count"], 4);
 }
 
 #[test]
 fn inspect_error_report_json_includes_cli_argument_invalid_code() {
-    let report = CliError::inspect_stdin_secret_empty("stdin_passphrase", "passphrase").error_report();
+    let report =
+        CliError::inspect_stdin_secret_empty("stdin_passphrase", "passphrase").error_report();
     let rendered = render_inspect_error_report_json("inspect.verify", &report);
     let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
 
@@ -85,7 +88,10 @@ fn inspect_error_report_json_includes_cli_argument_invalid_code() {
     assert!(json["error"].as_object().unwrap().get("kind").is_none());
     assert_eq!(json["error"]["code"], "CLI_ARGUMENT_INVALID");
     assert_eq!(json["error"]["status"], "invalid_input");
-    assert_eq!(json["error"]["message"], "stdin passphrase must not be empty");
+    assert_eq!(
+        json["error"]["message"],
+        "stdin passphrase must not be empty"
+    );
     assert_eq!(json["error"]["details"]["argument"], "stdin_passphrase");
     assert_eq!(json["error"]["details"]["secret_kind"], "passphrase");
     assert_eq!(json["error"]["details"]["input_source"], "stdin");
@@ -149,12 +155,10 @@ fn inspect_verify_json_keeps_incomplete_btree_state_in_payload() {
     assert_eq!(json["payload"]["issue_count"], 0);
     assert_eq!(json["payload"]["btree"]["checked"], false);
     assert_eq!(json["payload"]["btree"]["ok"], false);
-    assert!(
-        json["payload"]["btree"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("root_page is 0 — not a BTree file")
-    );
+    assert!(json["payload"]["btree"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("root_page is 0 — not a BTree file"));
 
     let _ = std::fs::remove_file(&path);
 }
@@ -175,9 +179,18 @@ fn inspect_verify_json_includes_payload_issue_codes_for_auth_failure() {
 
     assert!(json.as_object().unwrap().get("schema_version").is_none());
     assert_eq!(json["ok"], false);
-    assert_eq!(json["payload"]["issues"][0]["code"], verify_payload_codes::VERIFY_PAGE_AUTH_FAILED);
-    assert_eq!(json["payload"]["page_results"][0]["issue_code"], verify_payload_codes::VERIFY_PAGE_AUTH_FAILED);
-    assert_eq!(json["payload"]["btree"]["code"], verify_payload_codes::VERIFY_BTREE_INCOMPLETE);
+    assert_eq!(
+        json["payload"]["issues"][0]["code"],
+        verify_payload_codes::VERIFY_PAGE_AUTH_FAILED
+    );
+    assert_eq!(
+        json["payload"]["page_results"][0]["issue_code"],
+        verify_payload_codes::VERIFY_PAGE_AUTH_FAILED
+    );
+    assert_eq!(
+        json["payload"]["btree"]["code"],
+        verify_payload_codes::VERIFY_BTREE_INCOMPLETE
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -198,7 +211,10 @@ fn inspect_verify_json_includes_incomplete_btree_code_for_partial_report() {
 
     assert_eq!(json["ok"], false);
     assert!(json["error"].is_null());
-    assert_eq!(json["payload"]["btree"]["code"], verify_payload_codes::VERIFY_BTREE_INCOMPLETE);
+    assert_eq!(
+        json["payload"]["btree"]["code"],
+        verify_payload_codes::VERIFY_BTREE_INCOMPLETE
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -261,13 +277,19 @@ fn inspect_wal_json_uses_structured_success_envelope() {
 
     {
         let mut writer = tosumu_core::wal::WalWriter::create(&wal_path).unwrap();
-        writer.append(&tosumu_core::wal::WalRecord::Begin { txn_id: 9 }).unwrap();
-        writer.append(&tosumu_core::wal::WalRecord::PageWrite {
-            pgno: 1,
-            page_version: 7,
-            frame: Box::new([0u8; tosumu_core::format::PAGE_SIZE]),
-        }).unwrap();
-        writer.append(&tosumu_core::wal::WalRecord::Commit { txn_id: 9 }).unwrap();
+        writer
+            .append(&tosumu_core::wal::WalRecord::Begin { txn_id: 9 })
+            .unwrap();
+        writer
+            .append(&tosumu_core::wal::WalRecord::PageWrite {
+                pgno: 1,
+                page_version: 7,
+                frame: Box::new([0u8; tosumu_core::format::PAGE_SIZE]),
+            })
+            .unwrap();
+        writer
+            .append(&tosumu_core::wal::WalRecord::Commit { txn_id: 9 })
+            .unwrap();
         writer.sync().unwrap();
     }
 
@@ -298,10 +320,12 @@ fn inspect_tree_json_uses_structured_success_envelope() {
 
     let mut store = tosumu_core::page_store::PageStore::create(&path).unwrap();
     for i in 0u32..500 {
-        store.put(
-            format!("tree-key-{i:05}").as_bytes(),
-            format!("tree-val-{i:05}").as_bytes(),
-        ).unwrap();
+        store
+            .put(
+                format!("tree-key-{i:05}").as_bytes(),
+                format!("tree-val-{i:05}").as_bytes(),
+            )
+            .unwrap();
     }
     assert!(
         store.stat().unwrap().tree_height >= 2,
@@ -315,7 +339,13 @@ fn inspect_tree_json_uses_structured_success_envelope() {
     assert_eq!(json["command"], "inspect.tree");
     assert_eq!(json["ok"], true);
     assert_eq!(json["payload"]["root"]["page_type_name"], "Internal");
-    assert!(json["payload"]["root"]["children"].as_array().unwrap().len() >= 2);
+    assert!(
+        json["payload"]["root"]["children"]
+            .as_array()
+            .unwrap()
+            .len()
+            >= 2
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -344,7 +374,12 @@ fn inspect_verify_json_accepts_explicit_passphrase_unlock() {
     let _ = std::fs::remove_file(&path);
     tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
 
-    let rendered = cmd_inspect_verify_json(&path, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+    let rendered = cmd_inspect_verify_json(
+        &path,
+        Some(UnlockSecret::Passphrase("correct-horse".to_string())),
+        false,
+    )
+    .unwrap();
     let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
     assert_eq!(json["ok"], true);
 
@@ -355,10 +390,17 @@ fn inspect_verify_json_accepts_explicit_passphrase_unlock() {
 fn inspect_page_json_accepts_explicit_passphrase_unlock() {
     let path = temp_path("inspect_page_json_passphrase_unlock");
     let _ = std::fs::remove_file(&path);
-    let mut store = tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
+    let mut store =
+        tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
     store.put(b"alpha", b"one").unwrap();
 
-    let rendered = cmd_inspect_page_json(&path, 1, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+    let rendered = cmd_inspect_page_json(
+        &path,
+        1,
+        Some(UnlockSecret::Passphrase("correct-horse".to_string())),
+        false,
+    )
+    .unwrap();
     let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
     assert_eq!(json["ok"], true);
 
@@ -369,10 +411,16 @@ fn inspect_page_json_accepts_explicit_passphrase_unlock() {
 fn inspect_pages_json_accepts_explicit_passphrase_unlock() {
     let path = temp_path("inspect_pages_json_passphrase_unlock");
     let _ = std::fs::remove_file(&path);
-    let mut store = tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
+    let mut store =
+        tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
     store.put(b"alpha", b"one").unwrap();
 
-    let rendered = cmd_inspect_pages_json(&path, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+    let rendered = cmd_inspect_pages_json(
+        &path,
+        Some(UnlockSecret::Passphrase("correct-horse".to_string())),
+        false,
+    )
+    .unwrap();
     let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
     assert_eq!(json["ok"], true);
 
@@ -384,15 +432,23 @@ fn inspect_tree_json_accepts_explicit_passphrase_unlock() {
     let path = temp_path("inspect_tree_json_passphrase_unlock");
     let _ = std::fs::remove_file(&path);
 
-    let mut store = tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
+    let mut store =
+        tosumu_core::page_store::PageStore::create_encrypted(&path, "correct-horse").unwrap();
     for i in 0u32..500 {
-        store.put(
-            format!("tree-key-{i:05}").as_bytes(),
-            format!("tree-val-{i:05}").as_bytes(),
-        ).unwrap();
+        store
+            .put(
+                format!("tree-key-{i:05}").as_bytes(),
+                format!("tree-val-{i:05}").as_bytes(),
+            )
+            .unwrap();
     }
 
-    let rendered = cmd_inspect_tree_json(&path, Some(UnlockSecret::Passphrase("correct-horse".to_string())), false).unwrap();
+    let rendered = cmd_inspect_tree_json(
+        &path,
+        Some(UnlockSecret::Passphrase("correct-horse".to_string())),
+        false,
+    )
+    .unwrap();
     let json: serde_json::Value = serde_json::from_str(&rendered).unwrap();
     assert_eq!(json["ok"], true);
 
@@ -460,7 +516,10 @@ fn inspect_tree_corrupt_error_uses_corrupt_structured_envelope() {
     assert_eq!(json["error"]["code"], "PAGE_DECODE_CORRUPT");
     assert_eq!(json["error"]["status"], "integrity_failure");
     assert_eq!(json["error"]["pgno"], 9);
-    assert_eq!(json["error"]["details"]["reason"], "tree node page number out of range");
+    assert_eq!(
+        json["error"]["details"]["reason"],
+        "tree node page number out of range"
+    );
 }
 
 fn temp_path(tag: &str) -> PathBuf {

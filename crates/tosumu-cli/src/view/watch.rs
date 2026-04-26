@@ -31,7 +31,10 @@ fn file_fingerprint(path: &Path) -> std::io::Result<Option<FileFingerprint>> {
 
 pub(super) fn capture_watch_fingerprint(path: &Path) -> std::io::Result<WatchFingerprint> {
     let db = file_fingerprint(path)?.ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "database file missing during watch")
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "database file missing during watch",
+        )
     })?;
     Ok(WatchFingerprint {
         db,
@@ -39,7 +42,10 @@ pub(super) fn capture_watch_fingerprint(path: &Path) -> std::io::Result<WatchFin
     })
 }
 
-pub(super) fn watch_refresh_needed(path: &Path, previous: Option<&WatchFingerprint>) -> std::io::Result<bool> {
+pub(super) fn watch_refresh_needed(
+    path: &Path,
+    previous: Option<&WatchFingerprint>,
+) -> std::io::Result<bool> {
     let current = capture_watch_fingerprint(path)?;
     Ok(match previous {
         Some(previous) => previous != &current,

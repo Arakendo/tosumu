@@ -2,37 +2,18 @@ use std::path::Path;
 
 use tosumu_core::format::{PAGE_TYPE_FREE, PAGE_TYPE_INTERNAL, PAGE_TYPE_LEAF, PAGE_TYPE_OVERFLOW};
 use tosumu_core::inspect::{
-    HeaderInfo,
-    PageVerifyResult,
-    TreeNodeSummary,
-    TreeSummary,
-    VerifyIssueKind,
-    VerifyReport,
-    WalRecordSummary,
-    WalRecordSummaryKind,
-    WalSummary,
+    HeaderInfo, PageVerifyResult, TreeNodeSummary, TreeSummary, VerifyIssueKind, VerifyReport,
+    WalRecordSummary, WalRecordSummaryKind, WalSummary,
 };
-use tosumu_core::pager::Pager;
 use tosumu_core::page_store::PageStore;
+use tosumu_core::pager::Pager;
 
 use super::render::{
-    format_wal_record,
-    keyslot_kind_label,
-    page_list_summary,
-    page_type_label,
-    preview_bytes,
-    selected_page_auth_summary,
-    summarize_page_auth,
-    PageAuthSummary,
+    format_wal_record, keyslot_kind_label, page_list_summary, page_type_label, preview_bytes,
+    selected_page_auth_summary, summarize_page_auth, PageAuthSummary,
 };
 use super::state::{
-    FocusPane,
-    PageRow,
-    PageStatus,
-    ViewApp,
-    ViewMode,
-    PAGE_LIST_WINDOW,
-    PAGE_LIST_JUMP,
+    FocusPane, PageRow, PageStatus, ViewApp, ViewMode, PAGE_LIST_JUMP, PAGE_LIST_WINDOW,
     PANEL_SCROLL_PAGE,
 };
 use super::watch::{capture_watch_fingerprint, watch_refresh_needed};
@@ -161,13 +142,34 @@ fn preview_bytes_formats_utf8_and_binary() {
 
 #[test]
 fn view_mode_keys_cover_all_panels() {
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('1')), Some(ViewMode::Header));
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('d')), Some(ViewMode::Detail));
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('v')), Some(ViewMode::Verify));
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('t')), Some(ViewMode::Tree));
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('l')), Some(ViewMode::Wal));
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('p')), Some(ViewMode::Protectors));
-    assert_eq!(ViewMode::from_key(crossterm::event::KeyCode::Char('x')), None);
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('1')),
+        Some(ViewMode::Header)
+    );
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('d')),
+        Some(ViewMode::Detail)
+    );
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('v')),
+        Some(ViewMode::Verify)
+    );
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('t')),
+        Some(ViewMode::Tree)
+    );
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('l')),
+        Some(ViewMode::Wal)
+    );
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('p')),
+        Some(ViewMode::Protectors)
+    );
+    assert_eq!(
+        ViewMode::from_key(crossterm::event::KeyCode::Char('x')),
+        None
+    );
 }
 
 #[test]
@@ -195,7 +197,10 @@ fn page_list_summary_formats_missing_fields() {
         search_text: None,
     };
 
-    assert_eq!(page_list_summary(&page), "    9  ?         auth     v --  slots  --");
+    assert_eq!(
+        page_list_summary(&page),
+        "    9  ?         auth     v --  slots  --"
+    );
 }
 
 #[test]
@@ -438,7 +443,10 @@ fn confirm_filter_limits_visible_pages_and_selection() {
 
         assert_eq!(app.visible_page_count(), 1);
         assert_eq!(app.selected, Some(1));
-        assert_eq!(app.footer_status(), " • filter: auth (1) • filter matched 1 page(s)");
+        assert_eq!(
+            app.footer_status(),
+            " • filter: auth (1) • filter matched 1 page(s)"
+        );
     });
 }
 

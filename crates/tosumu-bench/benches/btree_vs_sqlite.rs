@@ -166,11 +166,8 @@ fn bench_insert_plain(c: &mut Criterion) {
                     .prepare("INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)")
                     .unwrap();
                 for i in 0..INSERT_BATCH {
-                    stmt.execute(rusqlite::params![
-                        u64_key(i).as_slice(),
-                        PAYLOAD.as_slice()
-                    ])
-                    .unwrap();
+                    stmt.execute(rusqlite::params![u64_key(i).as_slice(), PAYLOAD.as_slice()])
+                        .unwrap();
                 }
                 drop(stmt);
                 conn.execute_batch("COMMIT;").unwrap();
@@ -249,10 +246,9 @@ fn bench_scan_range_plain(c: &mut Criterion) {
                 .prepare_cached("SELECT key,value FROM kv WHERE key>=?1 AND key<=?2")
                 .unwrap();
             let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
-                .query_map(
-                    rusqlite::params![start.as_slice(), end.as_slice()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+                .query_map(rusqlite::params![start.as_slice(), end.as_slice()], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();
@@ -283,9 +279,7 @@ fn bench_full_scan_plain(c: &mut Criterion) {
 
     group.bench_function("sqlite", |b| {
         b.iter(|| {
-            let mut stmt = conn
-                .prepare_cached("SELECT key,value FROM kv")
-                .unwrap();
+            let mut stmt = conn.prepare_cached("SELECT key,value FROM kv").unwrap();
             let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
                 .unwrap()
@@ -337,11 +331,8 @@ fn bench_insert_encrypted(c: &mut Criterion) {
                     .prepare("INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)")
                     .unwrap();
                 for i in 0..INSERT_BATCH {
-                    stmt.execute(rusqlite::params![
-                        u64_key(i).as_slice(),
-                        PAYLOAD.as_slice()
-                    ])
-                    .unwrap();
+                    stmt.execute(rusqlite::params![u64_key(i).as_slice(), PAYLOAD.as_slice()])
+                        .unwrap();
                 }
                 drop(stmt);
                 conn.execute_batch("COMMIT;").unwrap();
@@ -425,10 +416,9 @@ fn bench_scan_range_encrypted(c: &mut Criterion) {
                 .prepare_cached("SELECT key,value FROM kv WHERE key>=?1 AND key<=?2")
                 .unwrap();
             let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
-                .query_map(
-                    rusqlite::params![start.as_slice(), end.as_slice()],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
+                .query_map(rusqlite::params![start.as_slice(), end.as_slice()], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .unwrap()
                 .map(|r| r.unwrap())
                 .collect();

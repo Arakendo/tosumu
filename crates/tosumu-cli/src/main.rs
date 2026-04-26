@@ -3,19 +3,19 @@
 //! Key management plus the first interactive inspection slice.
 //! See DESIGN.md §12.0 (MVP +8).
 
-use std::path::PathBuf;
 use clap::{ArgGroup, Args, Parser, Subcommand};
+use std::path::PathBuf;
 use tosumu_core::error::ErrorValue;
 
-mod commands;
-mod error_boundary;
-mod inspect_contract;
-#[cfg(test)]
-mod inspect_cli_tests;
-mod unlock;
-mod view;
 #[cfg(test)]
 mod cli_tests;
+mod commands;
+mod error_boundary;
+#[cfg(test)]
+mod inspect_cli_tests;
+mod inspect_contract;
+mod unlock;
+mod view;
 
 use commands::run;
 use error_boundary::CliError;
@@ -65,47 +65,68 @@ impl Cli {
     fn json_error_contract(&self) -> Option<InspectJsonContract> {
         match &self.command {
             Command::Inspect {
-                action: InspectAction::Header {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.header" }),
+                action:
+                    InspectAction::Header {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.header",
+            }),
             Command::Inspect {
-                action: InspectAction::Verify {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.verify" }),
+                action:
+                    InspectAction::Verify {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.verify",
+            }),
             Command::Inspect {
-                action: InspectAction::Pages {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.pages" }),
+                action:
+                    InspectAction::Pages {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.pages",
+            }),
             Command::Inspect {
-                action: InspectAction::Wal {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.wal" }),
+                action:
+                    InspectAction::Wal {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.wal",
+            }),
             Command::Inspect {
-                action: InspectAction::Page {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.page" }),
+                action:
+                    InspectAction::Page {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.page",
+            }),
             Command::Inspect {
-                action: InspectAction::Tree {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.tree" }),
+                action:
+                    InspectAction::Tree {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.tree",
+            }),
             Command::Inspect {
-                action: InspectAction::Protectors {
-                    json: InspectJsonArgs { json: true },
-                    ..
-                },
-            } => Some(InspectJsonContract { command: "inspect.protectors" }),
+                action:
+                    InspectAction::Protectors {
+                        json: InspectJsonArgs { json: true },
+                        ..
+                    },
+            } => Some(InspectJsonContract {
+                command: "inspect.protectors",
+            }),
             _ => None,
         }
     }
@@ -127,23 +148,13 @@ enum Command {
         value: String,
     },
     /// Retrieve the value for a key.
-    Get {
-        path: PathBuf,
-        key: String,
-    },
+    Get { path: PathBuf, key: String },
     /// Delete a key.
-    Delete {
-        path: PathBuf,
-        key: String,
-    },
+    Delete { path: PathBuf, key: String },
     /// Print all key-value pairs, sorted by key.
-    Scan {
-        path: PathBuf,
-    },
+    Scan { path: PathBuf },
     /// Show database statistics.
-    Stat {
-        path: PathBuf,
-    },
+    Stat { path: PathBuf },
     /// Pretty-print the file header, and optionally a decoded page.
     Dump {
         path: PathBuf,
@@ -294,10 +305,7 @@ fn main() {
             if let Some(contract) = json_error_contract {
                 println!(
                     "{}",
-                    render_inspect_error_report_json(
-                        contract.command,
-                        &e.error_report(),
-                    )
+                    render_inspect_error_report_json(contract.command, &e.error_report(),)
                 );
             } else {
                 eprintln!("{}", render_cli_error(&e));

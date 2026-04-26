@@ -4,15 +4,8 @@ use std::time::{Duration, Instant};
 use ratatui::widgets::ListState;
 use tosumu_core::format::{PAGE_TYPE_FREE, PAGE_TYPE_INTERNAL, PAGE_TYPE_LEAF, PAGE_TYPE_OVERFLOW};
 use tosumu_core::inspect::{
-    inspect_page_from_pager,
-    inspect_pages_from_pager,
-    HeaderInfo,
-    PageInspectState,
-    PageSummary,
-    RecordInfo,
-    TreeSummary,
-    VerifyReport,
-    WalSummary,
+    inspect_page_from_pager, inspect_pages_from_pager, HeaderInfo, PageInspectState, PageSummary,
+    RecordInfo, TreeSummary, VerifyReport, WalSummary,
 };
 use tosumu_core::pager::Pager;
 
@@ -68,12 +61,24 @@ impl ViewMode {
 
     pub(super) fn from_key(code: crossterm::event::KeyCode) -> Option<Self> {
         match code {
-            crossterm::event::KeyCode::Char('1') | crossterm::event::KeyCode::Char('h') => Some(ViewMode::Header),
-            crossterm::event::KeyCode::Char('2') | crossterm::event::KeyCode::Char('d') => Some(ViewMode::Detail),
-            crossterm::event::KeyCode::Char('3') | crossterm::event::KeyCode::Char('v') => Some(ViewMode::Verify),
-            crossterm::event::KeyCode::Char('4') | crossterm::event::KeyCode::Char('t') => Some(ViewMode::Tree),
-            crossterm::event::KeyCode::Char('5') | crossterm::event::KeyCode::Char('l') => Some(ViewMode::Wal),
-            crossterm::event::KeyCode::Char('6') | crossterm::event::KeyCode::Char('p') => Some(ViewMode::Protectors),
+            crossterm::event::KeyCode::Char('1') | crossterm::event::KeyCode::Char('h') => {
+                Some(ViewMode::Header)
+            }
+            crossterm::event::KeyCode::Char('2') | crossterm::event::KeyCode::Char('d') => {
+                Some(ViewMode::Detail)
+            }
+            crossterm::event::KeyCode::Char('3') | crossterm::event::KeyCode::Char('v') => {
+                Some(ViewMode::Verify)
+            }
+            crossterm::event::KeyCode::Char('4') | crossterm::event::KeyCode::Char('t') => {
+                Some(ViewMode::Tree)
+            }
+            crossterm::event::KeyCode::Char('5') | crossterm::event::KeyCode::Char('l') => {
+                Some(ViewMode::Wal)
+            }
+            crossterm::event::KeyCode::Char('6') | crossterm::event::KeyCode::Char('p') => {
+                Some(ViewMode::Protectors)
+            }
             _ => None,
         }
     }
@@ -238,7 +243,11 @@ impl<'a> ViewApp<'a> {
         self.refresh_selected_detail(pager)
     }
 
-    pub(super) fn select_index(&mut self, pager: &Pager, visible_index: usize) -> Result<(), CliError> {
+    pub(super) fn select_index(
+        &mut self,
+        pager: &Pager,
+        visible_index: usize,
+    ) -> Result<(), CliError> {
         let visible = self.visible_page_indices();
         if visible.is_empty() {
             self.selected = None;
@@ -312,7 +321,10 @@ impl<'a> ViewApp<'a> {
     pub(super) fn move_page_down(&mut self, pager: &Pager) -> Result<(), CliError> {
         match self.focus {
             FocusPane::Pages => {
-                let next_index = self.selected_visible_index().unwrap_or(0).saturating_add(PAGE_LIST_JUMP);
+                let next_index = self
+                    .selected_visible_index()
+                    .unwrap_or(0)
+                    .saturating_add(PAGE_LIST_JUMP);
                 self.select_index(pager, next_index)
             }
             FocusPane::Panel => {
@@ -325,7 +337,10 @@ impl<'a> ViewApp<'a> {
     pub(super) fn move_page_up(&mut self, pager: &Pager) -> Result<(), CliError> {
         match self.focus {
             FocusPane::Pages => {
-                let next_index = self.selected_visible_index().unwrap_or(0).saturating_sub(PAGE_LIST_JUMP);
+                let next_index = self
+                    .selected_visible_index()
+                    .unwrap_or(0)
+                    .saturating_sub(PAGE_LIST_JUMP);
                 self.select_index(pager, next_index)
             }
             FocusPane::Panel => {
@@ -355,10 +370,13 @@ impl<'a> ViewApp<'a> {
     }
 
     pub(super) fn refresh_selected_detail(&mut self, pager: &Pager) -> Result<(), CliError> {
-        self.selected_detail = match self.selected.and_then(|index| self.pages.get(index).cloned()) {
-            Some(page) if matches!(page.status, PageStatus::Ok) => {
-                Some(SelectedPageDetail::Decoded(inspect_page_from_pager(pager, page.pgno)?))
-            }
+        self.selected_detail = match self
+            .selected
+            .and_then(|index| self.pages.get(index).cloned())
+        {
+            Some(page) if matches!(page.status, PageStatus::Ok) => Some(
+                SelectedPageDetail::Decoded(inspect_page_from_pager(pager, page.pgno)?),
+            ),
             Some(page) => Some(SelectedPageDetail::Unavailable {
                 pgno: page.pgno,
                 status: page.status,
@@ -369,7 +387,11 @@ impl<'a> ViewApp<'a> {
         Ok(())
     }
 
-    pub(super) fn restore_selection(&mut self, selected_pgno: Option<u64>, pager: &Pager) -> Result<(), CliError> {
+    pub(super) fn restore_selection(
+        &mut self,
+        selected_pgno: Option<u64>,
+        pager: &Pager,
+    ) -> Result<(), CliError> {
         if self.pages.is_empty() {
             self.selected = None;
             self.selected_detail = None;
@@ -585,7 +607,10 @@ impl<'a> ViewApp<'a> {
             return 0..visible_len;
         }
 
-        let selected = self.selected_visible_index().unwrap_or(0).min(visible_len - 1);
+        let selected = self
+            .selected_visible_index()
+            .unwrap_or(0)
+            .min(visible_len - 1);
         let max_start = visible_len - PAGE_LIST_WINDOW;
         let start = selected.saturating_sub(PAGE_LIST_WINDOW / 2).min(max_start);
         start..(start + PAGE_LIST_WINDOW)
@@ -680,21 +705,19 @@ pub(super) fn load_page_rows(pager: &Pager) -> Result<Vec<PageRow>, CliError> {
     Ok(pages
         .pages
         .into_iter()
-        .map(|page| {
-            PageRow {
-                pgno: page.pgno,
-                page_type: page.page_type,
-                page_version: page.page_version,
-                slot_count: page.slot_count,
-                status: match page.state {
-                    PageInspectState::Ok => PageStatus::Ok,
-                    PageInspectState::AuthFailed => PageStatus::AuthFailed,
-                    PageInspectState::Corrupt => PageStatus::Corrupt,
-                    PageInspectState::Io => PageStatus::Io,
-                },
-                issue: page.issue,
-                search_text: None,
-            }
+        .map(|page| PageRow {
+            pgno: page.pgno,
+            page_type: page.page_type,
+            page_version: page.page_version,
+            slot_count: page.slot_count,
+            status: match page.state {
+                PageInspectState::Ok => PageStatus::Ok,
+                PageInspectState::AuthFailed => PageStatus::AuthFailed,
+                PageInspectState::Corrupt => PageStatus::Corrupt,
+                PageInspectState::Io => PageStatus::Io,
+            },
+            issue: page.issue,
+            search_text: None,
         })
         .collect())
 }
@@ -778,5 +801,8 @@ fn searchable_bytes(bytes: &[u8]) -> String {
 }
 
 fn searchable_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }

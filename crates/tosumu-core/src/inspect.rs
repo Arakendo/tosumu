@@ -50,19 +50,19 @@ pub fn read_header_info(path: &Path) -> Result<HeaderInfo> {
 
     let ks = KEYSLOT_REGION_OFFSET;
     Ok(HeaderInfo {
-        format_version:       read_u16(&page0, OFF_FORMAT_VERSION),
-        page_size:            read_u16(&page0, OFF_PAGE_SIZE),
-        min_reader_version:   read_u16(&page0, OFF_MIN_READER_VERSION),
-        flags:                read_u16(&page0, OFF_FLAGS),
-        page_count:           read_u64(&page0, OFF_PAGE_COUNT),
-        freelist_head:        read_u64(&page0, OFF_FREELIST_HEAD),
-        root_page:            read_u64(&page0, OFF_ROOT_PAGE),
-        wal_checkpoint_lsn:   read_u64(&page0, OFF_WAL_CHECKPOINT_LSN),
-        dek_id:               read_u64(&page0, OFF_DEK_ID),
-        keyslot_count:        read_u16(&page0, OFF_KEYSLOT_COUNT),
+        format_version: read_u16(&page0, OFF_FORMAT_VERSION),
+        page_size: read_u16(&page0, OFF_PAGE_SIZE),
+        min_reader_version: read_u16(&page0, OFF_MIN_READER_VERSION),
+        flags: read_u16(&page0, OFF_FLAGS),
+        page_count: read_u64(&page0, OFF_PAGE_COUNT),
+        freelist_head: read_u64(&page0, OFF_FREELIST_HEAD),
+        root_page: read_u64(&page0, OFF_ROOT_PAGE),
+        wal_checkpoint_lsn: read_u64(&page0, OFF_WAL_CHECKPOINT_LSN),
+        dek_id: read_u64(&page0, OFF_DEK_ID),
+        keyslot_count: read_u16(&page0, OFF_KEYSLOT_COUNT),
         keyslot_region_pages: read_u16(&page0, OFF_KEYSLOT_REGION_PAGES),
-        ks0_kind:             page0[ks + KS_OFF_KIND],
-        ks0_version:          page0[ks + KS_OFF_VERSION],
+        ks0_kind: page0[ks + KS_OFF_KIND],
+        ks0_version: page0[ks + KS_OFF_VERSION],
     })
 }
 
@@ -87,10 +87,18 @@ pub fn read_raw_frame(path: &Path, pgno: u64) -> Result<[u8; PAGE_SIZE]> {
 
 /// A single decoded record entry from a slotted leaf page.
 pub enum RecordInfo {
-    Live { key: Vec<u8>, value: Vec<u8> },
-    Tombstone { key: Vec<u8> },
+    Live {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Tombstone {
+        key: Vec<u8>,
+    },
     /// Could not be decoded — carries slot index and raw record-type byte.
-    Unknown { slot: u16, record_type: u8 },
+    Unknown {
+        slot: u16,
+        record_type: u8,
+    },
 }
 
 /// Decoded summary of an encrypted data page.
@@ -199,9 +207,13 @@ pub fn inspect_wal(path: &Path) -> Result<WalSummary> {
             lsn,
             kind: match record {
                 WalRecord::Begin { txn_id } => WalRecordSummaryKind::Begin { txn_id },
-                WalRecord::PageWrite { pgno, page_version, .. } => WalRecordSummaryKind::PageWrite { pgno, page_version },
+                WalRecord::PageWrite {
+                    pgno, page_version, ..
+                } => WalRecordSummaryKind::PageWrite { pgno, page_version },
                 WalRecord::Commit { txn_id } => WalRecordSummaryKind::Commit { txn_id },
-                WalRecord::Checkpoint { up_to_lsn } => WalRecordSummaryKind::Checkpoint { up_to_lsn },
+                WalRecord::Checkpoint { up_to_lsn } => {
+                    WalRecordSummaryKind::Checkpoint { up_to_lsn }
+                }
             },
         })
         .collect();
@@ -234,16 +246,19 @@ pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> 
     }
 
     let (plaintext, page_version) = pager.read_page(pgno)?;
-    let page_type  = plaintext[0];
+    let page_type = plaintext[0];
     let slot_count = read_u16(&plaintext, 2);
     let free_start = read_u16(&plaintext, 4);
-    let free_end   = read_u16(&plaintext, 6);
+    let free_end = read_u16(&plaintext, 6);
 
     let mut records = Vec::with_capacity(slot_count as usize);
     for i in 0..slot_count as usize {
         let slot_pos = PAGE_HEADER_SIZE + i * SLOT_SIZE;
         if slot_pos + SLOT_SIZE > PAGE_PLAINTEXT_SIZE {
-            records.push(RecordInfo::Unknown { slot: i as u16, record_type: 0 });
+            records.push(RecordInfo::Unknown {
+                slot: i as u16,
+                record_type: 0,
+            });
             break;
         }
         let offset = read_u16(&plaintext, slot_pos) as usize;
@@ -254,7 +269,10 @@ pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> 
             || offset < free_end as usize
             || offset + length > PAGE_PLAINTEXT_SIZE
         {
-            records.push(RecordInfo::Unknown { slot: i as u16, record_type: 0 });
+            records.push(RecordInfo::Unknown {
+                slot: i as u16,
+                record_type: 0,
+            });
             continue;
         }
 
@@ -265,7 +283,7 @@ pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> 
                 let val_len = u16::from_le_bytes([record[3], record[4]]) as usize;
                 if 5 + key_len + val_len <= record.len() {
                     records.push(RecordInfo::Live {
-                        key:   record[5..5 + key_len].to_vec(),
+                        key: record[5..5 + key_len].to_vec(),
                         value: record[5 + key_len..5 + key_len + val_len].to_vec(),
                     });
                 } else {
@@ -288,7 +306,10 @@ pub fn inspect_page_from_pager(pager: &Pager, pgno: u64) -> Result<PageSummary> 
                     });
                 }
             }
-            rt => records.push(RecordInfo::Unknown { slot: i as u16, record_type: rt }),
+            rt => records.push(RecordInfo::Unknown {
+                slot: i as u16,
+                record_type: rt,
+            }),
         }
     }
 
@@ -325,7 +346,9 @@ pub fn inspect_pages_from_pager(pager: &Pager) -> Result<PagesSummary> {
                     page_type: None,
                     slot_count: None,
                     state: PageInspectState::AuthFailed,
-                    issue: Some("authentication tag mismatch (page corrupted or tampered)".to_owned()),
+                    issue: Some(
+                        "authentication tag mismatch (page corrupted or tampered)".to_owned(),
+                    ),
                 });
             }
             Err(TosumuError::Corrupt { reason, .. }) => {
@@ -357,7 +380,10 @@ pub fn inspect_pages_from_pager(pager: &Pager) -> Result<PagesSummary> {
 pub fn inspect_tree_from_pager(pager: &Pager) -> Result<TreeSummary> {
     let root_pgno = pager.root_page();
     if root_pgno == 0 {
-        return Err(TosumuError::Corrupt { pgno: 0, reason: "root_page is 0" });
+        return Err(TosumuError::Corrupt {
+            pgno: 0,
+            reason: "root_page is 0",
+        });
     }
 
     let mut visited = HashSet::new();
@@ -374,15 +400,24 @@ fn inspect_tree_node_from_pager(
     const MAX_DEPTH: usize = 64;
 
     if depth > MAX_DEPTH {
-        return Err(TosumuError::Corrupt { pgno, reason: "tree inspection exceeded maximum depth (cycle suspected)" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "tree inspection exceeded maximum depth (cycle suspected)",
+        });
     }
 
     if pgno == 0 || pgno >= pager.page_count() {
-        return Err(TosumuError::Corrupt { pgno, reason: "tree node page number out of range" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "tree node page number out of range",
+        });
     }
 
     if !visited.insert(pgno) {
-        return Err(TosumuError::Corrupt { pgno, reason: "tree inspection encountered a repeated page" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "tree inspection encountered a repeated page",
+        });
     }
 
     let result = (|| {
@@ -409,7 +444,8 @@ fn inspect_tree_node_from_pager(
             PAGE_TYPE_INTERNAL => {
                 let mut children = Vec::with_capacity(slot_count as usize + 1);
                 let leftmost = read_u64(&plaintext, PAGE_OFF_LEFTMOST);
-                let leftmost_child = inspect_tree_node_from_pager(pager, leftmost, visited, depth + 1)?;
+                let leftmost_child =
+                    inspect_tree_node_from_pager(pager, leftmost, visited, depth + 1)?;
                 children.push(TreeChildSummary {
                     relation: TreeChildRelation::Leftmost,
                     separator_key: None,
@@ -417,8 +453,10 @@ fn inspect_tree_node_from_pager(
                 });
 
                 for index in 0..slot_count as usize {
-                    let (separator_key, right_child) = inspect_internal_slot(&plaintext, pgno, index)?;
-                    let child = inspect_tree_node_from_pager(pager, right_child, visited, depth + 1)?;
+                    let (separator_key, right_child) =
+                        inspect_internal_slot(&plaintext, pgno, index)?;
+                    let child =
+                        inspect_tree_node_from_pager(pager, right_child, visited, depth + 1)?;
                     children.push(TreeChildSummary {
                         relation: TreeChildRelation::Separator,
                         separator_key: Some(separator_key),
@@ -437,7 +475,10 @@ fn inspect_tree_node_from_pager(
                     children,
                 })
             }
-            _ => Err(TosumuError::Corrupt { pgno, reason: "unexpected page type during tree inspection" }),
+            _ => Err(TosumuError::Corrupt {
+                pgno,
+                reason: "unexpected page type during tree inspection",
+            }),
         }
     })();
 
@@ -445,23 +486,36 @@ fn inspect_tree_node_from_pager(
     result
 }
 
-fn inspect_internal_slot(page: &[u8; PAGE_PLAINTEXT_SIZE], pgno: u64, index: usize) -> Result<(Vec<u8>, u64)> {
+fn inspect_internal_slot(
+    page: &[u8; PAGE_PLAINTEXT_SIZE],
+    pgno: u64,
+    index: usize,
+) -> Result<(Vec<u8>, u64)> {
     let slot_pos = PAGE_HEADER_SIZE + index * SLOT_SIZE;
     if slot_pos + SLOT_SIZE > PAGE_PLAINTEXT_SIZE {
-        return Err(TosumuError::Corrupt { pgno, reason: "internal slot header overflow" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "internal slot header overflow",
+        });
     }
 
     let off = read_u16(page, slot_pos) as usize;
     let len = read_u16(page, slot_pos + 2) as usize;
     if off + len > PAGE_PLAINTEXT_SIZE || len < 10 {
-        return Err(TosumuError::Corrupt { pgno, reason: "invalid internal slot" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "invalid internal slot",
+        });
     }
 
     let rec = &page[off..off + len];
     let right_child = u64::from_le_bytes(rec[0..8].try_into().unwrap());
     let key_len = u16::from_le_bytes([rec[8], rec[9]]) as usize;
     if 10 + key_len > len {
-        return Err(TosumuError::Corrupt { pgno, reason: "internal slot key overflow" });
+        return Err(TosumuError::Corrupt {
+            pgno,
+            reason: "internal slot key overflow",
+        });
     }
 
     Ok((rec[10..10 + key_len].to_vec(), right_child))
@@ -518,8 +572,8 @@ pub fn verify_pager(pager: &Pager) -> Result<VerifyReport> {
     let page_count = pager.page_count();
     let pages_to_check = page_count.saturating_sub(1); // skip page 0
 
-    let mut pages_ok    = 0u64;
-    let mut issues      = Vec::new();
+    let mut pages_ok = 0u64;
+    let mut issues = Vec::new();
     let mut page_results = Vec::with_capacity(pages_to_check as usize);
 
     for pgno in 1..page_count {
@@ -535,8 +589,7 @@ pub fn verify_pager(pager: &Pager) -> Result<VerifyReport> {
                 });
             }
             Err(TosumuError::AuthFailed { .. }) => {
-                let desc = "authentication tag mismatch (page corrupted or tampered)"
-                    .to_owned();
+                let desc = "authentication tag mismatch (page corrupted or tampered)".to_owned();
                 issues.push(VerifyIssue {
                     pgno,
                     kind: VerifyIssueKind::AuthFailed,
@@ -583,15 +636,20 @@ pub fn verify_pager(pager: &Pager) -> Result<VerifyReport> {
         }
     }
 
-    Ok(VerifyReport { pages_checked: pages_to_check, pages_ok, issues, page_results })
+    Ok(VerifyReport {
+        pages_checked: pages_to_check,
+        pages_ok,
+        issues,
+        page_results,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::inspect_tree_node_from_pager;
-    use crate::pager::Pager;
-    use crate::page_store::PageStore;
     use crate::error::TosumuError;
+    use crate::page_store::PageStore;
+    use crate::pager::Pager;
 
     #[test]
     fn inspect_tree_node_out_of_range_is_corrupt() {
@@ -599,7 +657,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("tosumu_inspect_tree_out_of_range_{nanos}.tsm"));
+        let path =
+            std::env::temp_dir().join(format!("tosumu_inspect_tree_out_of_range_{nanos}.tsm"));
         let _ = std::fs::remove_file(&path);
 
         PageStore::create(&path).unwrap();

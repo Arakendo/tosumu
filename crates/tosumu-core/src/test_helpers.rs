@@ -54,11 +54,18 @@ pub(crate) struct CrashWriter<W: Write + Seek> {
 
 impl<W: Write + Seek> CrashWriter<W> {
     pub(crate) fn new(inner: W, phase: CrashPhase) -> Self {
-        CrashWriter { inner, phase, bytes_written: 0, triggered: false }
+        CrashWriter {
+            inner,
+            phase,
+            bytes_written: 0,
+            triggered: false,
+        }
     }
 
     /// Return the inner writer (only valid after the crash has fired, or for inspection).
-    pub(crate) fn into_inner(self) -> W { self.inner }
+    pub(crate) fn into_inner(self) -> W {
+        self.inner
+    }
 
     fn crash() -> io::Error {
         io::Error::new(io::ErrorKind::BrokenPipe, "CrashWriter: simulated crash")
@@ -67,7 +74,9 @@ impl<W: Write + Seek> CrashWriter<W> {
 
 impl<W: Write + Seek> Write for CrashWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if self.triggered { return Err(Self::crash()); }
+        if self.triggered {
+            return Err(Self::crash());
+        }
         match &self.phase {
             CrashPhase::BeforeWrite => {
                 self.triggered = true;
@@ -97,7 +106,9 @@ impl<W: Write + Seek> Write for CrashWriter<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.triggered { return Err(Self::crash()); }
+        if self.triggered {
+            return Err(Self::crash());
+        }
         match &self.phase {
             CrashPhase::AfterWrite => {
                 self.triggered = true;
@@ -126,7 +137,9 @@ pub(crate) struct CrashFile {
 
 impl CrashFile {
     pub(crate) fn new(file: std::fs::File, phase: CrashPhase) -> Self {
-        CrashFile { inner: CrashWriter::new(file, phase) }
+        CrashFile {
+            inner: CrashWriter::new(file, phase),
+        }
     }
 
     pub(crate) fn set_len(&mut self, size: u64) -> io::Result<()> {
@@ -148,16 +161,24 @@ impl CrashFile {
 }
 
 impl Write for CrashFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> { self.inner.write(buf) }
-    fn flush(&mut self) -> io::Result<()> { self.inner.flush() }
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 impl Seek for CrashFile {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> { self.inner.seek(pos) }
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(pos)
+    }
 }
 
 impl Read for CrashFile {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> { self.inner.inner.read(buf) }
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.inner.read(buf)
+    }
 }
 
 #[cfg(test)]
@@ -181,7 +202,12 @@ mod tests {
     #[test]
     fn crash_writer_mid_write_stops_after_requested_byte_count() {
         let inner = Cursor::new(Vec::<u8>::new());
-        let mut writer = CrashWriter::new(inner, CrashPhase::MidWrite { fail_after_bytes: 3 });
+        let mut writer = CrashWriter::new(
+            inner,
+            CrashPhase::MidWrite {
+                fail_after_bytes: 3,
+            },
+        );
 
         let written = writer.write(b"abcdef").unwrap();
         assert_eq!(written, 3);
@@ -211,7 +237,11 @@ mod tests {
         let temp = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(temp.path(), b"abcdef").unwrap();
 
-        let file = OpenOptions::new().read(true).write(true).open(temp.path()).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.path())
+            .unwrap();
         let mut crash_file = CrashFile::new(file, CrashPhase::DuringTruncate);
 
         let err = crash_file.set_len(2).unwrap_err();
@@ -222,7 +252,11 @@ mod tests {
     #[test]
     fn crash_file_after_write_fails_on_sync_but_preserves_written_bytes() {
         let temp = tempfile::NamedTempFile::new().unwrap();
-        let file = OpenOptions::new().read(true).write(true).open(temp.path()).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.path())
+            .unwrap();
         let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
 
         assert_eq!(crash_file.write(b"payload").unwrap(), 7);
