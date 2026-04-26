@@ -615,6 +615,95 @@ mod tests {
     }
 
     #[test]
+    fn transaction_root_split_flush_failure_recovers_full_tree_on_reopen() {
+        use crate::test_helpers::{CrashFile, CrashPhase};
+
+        let path = temp_path("txn_split_flush_fail");
+        let wal = diff_wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut store = PageStore::create(&path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut crash_file = CrashFile::new(file, CrashPhase::AfterWrite);
+
+        let err = store.transaction_with_crash_file(|tx| {
+            for i in 0u32..500 {
+                tx.put(
+                    format!("split-key-{i:05}").as_bytes(),
+                    format!("split-val-{i:05}").as_bytes(),
+                )?;
+            }
+            Ok(())
+        }, &mut crash_file).unwrap_err();
+        assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
+
+        drop(store);
+
+        let reopened = PageStore::open(&path).unwrap();
+        assert!(
+            reopened.stat().unwrap().tree_height >= 2,
+            "expected recovered tree to retain a split root"
+        );
+        for i in 0u32..500 {
+            assert_eq!(
+                reopened.get(format!("split-key-{i:05}").as_bytes()).unwrap(),
+                Some(format!("split-val-{i:05}").into_bytes()),
+                "missing key after recovering split transaction: {i}",
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    #[test]
+    fn transaction_root_split_partial_write_recovers_full_tree_on_reopen() {
+        use crate::test_helpers::{CrashFile, CrashPhase};
+
+        let path = temp_path("txn_split_partial_flush_fail");
+        let wal = diff_wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut store = PageStore::create(&path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let mut crash_file = CrashFile::new(
+            file,
+            CrashPhase::MidWrite { fail_after_bytes: ((crate::format::PAGE_SIZE * 3) / 2) as u64 },
+        );
+
+        let err = store.transaction_with_crash_file(|tx| {
+            for i in 0u32..500 {
+                tx.put(
+                    format!("split-mid-key-{i:05}").as_bytes(),
+                    format!("split-mid-val-{i:05}").as_bytes(),
+                )?;
+            }
+            Ok(())
+        }, &mut crash_file).unwrap_err();
+        assert!(matches!(err, TosumuError::CommittedButFlushFailed { .. }));
+
+        drop(store);
+
+        let reopened = PageStore::open(&path).unwrap();
+        assert!(
+            reopened.stat().unwrap().tree_height >= 2,
+            "expected recovered tree to retain a split root after torn write"
+        );
+        for i in 0u32..500 {
+            assert_eq!(
+                reopened.get(format!("split-mid-key-{i:05}").as_bytes()).unwrap(),
+                Some(format!("split-mid-val-{i:05}").into_bytes()),
+                "missing key after recovering torn split transaction: {i}",
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    #[test]
     fn spans_multiple_pages() {
         let path = temp_path("multipage");
         let _ = std::fs::remove_file(&path);
