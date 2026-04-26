@@ -1040,6 +1040,10 @@ impl Pager {
             };
             return Err(TosumuError::CommittedButFlushFailed { source: io_err });
         }
+
+        // The committed frames now live in .tsm, so leaving them in the WAL would
+        // let a later reopen replay stale snapshots over newer auto-commit writes.
+        self.wal_mut()?.truncate()?;
         Ok(())
     }
 
@@ -1429,8 +1433,10 @@ fn finish_open(
 
     let wp = wal_path(path);
     if wp.exists() {
-        crate::wal::recover(path, &wp)?;
-        // Re-read page0 after WAL recovery so page_count/root_page are current.
+        // If committed frames exist, replay them once and truncate the WAL so
+        // future opens cannot reapply stale snapshots over newer auto-commit writes.
+        crate::wal::checkpoint(path, &wp)?;
+        // Re-read page0 after recovery/checkpoint so page_count/root_page are current.
         file.seek(SeekFrom::Start(0))?;
         let mut refreshed = [0u8; PAGE_SIZE];
         file.read_exact(&mut refreshed)?;

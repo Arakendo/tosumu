@@ -298,6 +298,8 @@ fn validate_value(value: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use tempfile;
 
@@ -312,6 +314,51 @@ mod tests {
         let path = f.path().to_path_buf();
         drop(f);
         path
+    }
+
+    fn model_scan(model: &BTreeMap<Vec<u8>, Vec<u8>>) -> Vec<(Vec<u8>, Vec<u8>)> {
+        model
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    }
+
+    fn diff_key(index: usize) -> Vec<u8> {
+        format!("key-{index:02}").into_bytes()
+    }
+
+    fn diff_value(step: usize, salt: usize) -> Vec<u8> {
+        let repeat = 1 + ((step + salt) % 5);
+        format!("value-{step:03}-{salt:02}-{}", "x".repeat(repeat * 12)).into_bytes()
+    }
+
+    fn diff_wal_path(path: &std::path::Path) -> PathBuf {
+        crate::wal::wal_path(path)
+    }
+
+    #[derive(Debug, Clone)]
+    enum DiffOp {
+        Put(Vec<u8>, Vec<u8>),
+        Delete(Vec<u8>),
+        CrashReopen,
+        TxnPutPair(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>),
+    }
+
+    fn arb_diff_key() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(0u8..16, 1..=4)
+    }
+
+    fn arb_diff_value() -> impl Strategy<Value = Vec<u8>> {
+        prop::collection::vec(any::<u8>(), 0..=24)
+    }
+
+    fn assert_model_matches_store(
+        store: &PageStore,
+        model: &BTreeMap<Vec<u8>, Vec<u8>>,
+        context: &str)
+    {
+        store.tree.check_invariants().unwrap();
+        assert_eq!(store.scan().unwrap(), model_scan(model), "model mismatch after {context}");
     }
 
     #[test]
@@ -1237,6 +1284,161 @@ mod tests {
         assert_eq!(store.get(b"c").unwrap(), Some(b"3".to_vec()));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn encrypted_autocommit_after_transaction_survives_reopen() {
+        let path = temp_path("enc_txn_then_put");
+        let wal = diff_wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        {
+            let mut store = PageStore::create_encrypted(&path, "txn-put-pass").unwrap();
+            store.transaction(|tx| {
+                tx.put(b"a", b"1")?;
+                tx.put(b"a", b"2")?;
+                Ok(())
+            }).unwrap();
+            store.put(b"b", b"3").unwrap();
+        }
+
+        let reopened = PageStore::open_with_passphrase(&path, "txn-put-pass").unwrap();
+        assert_eq!(reopened.get(b"a").unwrap(), Some(b"2".to_vec()));
+        assert_eq!(reopened.get(b"b").unwrap(), Some(b"3".to_vec()));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    #[test]
+    fn differential_crash_recovery_matches_btreemap_model() {
+        let path = temp_path("diff_crash_recovery");
+        let wal = diff_wal_path(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+
+        let mut model = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+        let mut store = PageStore::create_encrypted(&path, "diff-pass").unwrap();
+
+        for step in 0..100usize {
+            match step % 10 {
+                0 => {
+                    drop(store);
+                    store = PageStore::open_with_passphrase(&path, "diff-pass").unwrap();
+                }
+                1 | 2 | 3 | 4 | 5 => {
+                    let key_index = (step * 7) % 41;
+                    let key = diff_key(key_index);
+                    let value = diff_value(step, key_index);
+                    model.insert(key.clone(), value.clone());
+                    store.put(&key, &value).unwrap();
+                }
+                6 | 7 => {
+                    let key_index = (step * 11) % 41;
+                    let key = diff_key(key_index);
+                    model.remove(&key);
+                    store.delete(&key).unwrap();
+                }
+                _ => {
+                    let key_a_index = (step * 5) % 41;
+                    let key_b_index = (step * 13 + 3) % 41;
+                    let key_a = diff_key(key_a_index);
+                    let key_b = diff_key(key_b_index);
+                    let value_a = diff_value(step, key_a_index + 50);
+                    let value_b = diff_value(step, key_b_index + 75);
+
+                    model.insert(key_a.clone(), value_a.clone());
+                    model.insert(key_b.clone(), value_b.clone());
+
+                    store.transaction(|tx| {
+                        tx.put(&key_a, &value_a)?;
+                        tx.put(&key_b, &value_b)?;
+                        Ok(())
+                    }).unwrap();
+                }
+            }
+
+            assert_model_matches_store(&store, &model, &format!("step {step}"));
+        }
+
+        drop(store);
+        let reopened = PageStore::open_with_passphrase(&path, "diff-pass").unwrap();
+        assert_model_matches_store(&reopened, &model, "final reopen");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wal);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn prop_differential_crash_recovery_matches_btreemap_model(
+            ops in prop::collection::vec(
+                prop_oneof![
+                    (arb_diff_key(), arb_diff_value()).prop_map(|(key, value)| DiffOp::Put(key, value)),
+                    arb_diff_key().prop_map(DiffOp::Delete),
+                    Just(DiffOp::CrashReopen),
+                    (arb_diff_key(), arb_diff_value(), arb_diff_key(), arb_diff_value())
+                        .prop_map(|(key_a, value_a, key_b, value_b)| DiffOp::TxnPutPair(key_a, value_a, key_b, value_b)),
+                ],
+                1..=60,
+            )
+        ) {
+            let path = temp_path("prop_diff_crash_recovery");
+            let wal = diff_wal_path(&path);
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&wal);
+
+            let mut model = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+            let mut store = PageStore::create_encrypted(&path, "prop-diff-pass").unwrap();
+
+            for (step, op) in ops.iter().enumerate() {
+                match op {
+                    DiffOp::Put(key, value) => {
+                        model.insert(key.clone(), value.clone());
+                        store.put(key, value).unwrap();
+                    }
+                    DiffOp::Delete(key) => {
+                        model.remove(key);
+                        store.delete(key).unwrap();
+                    }
+                    DiffOp::CrashReopen => {
+                        drop(store);
+                        store = PageStore::open_with_passphrase(&path, "prop-diff-pass").unwrap();
+                    }
+                    DiffOp::TxnPutPair(key_a, value_a, key_b, value_b) => {
+                        model.insert(key_a.clone(), value_a.clone());
+                        model.insert(key_b.clone(), value_b.clone());
+                        store.transaction(|tx| {
+                            tx.put(key_a, value_a)?;
+                            tx.put(key_b, value_b)?;
+                            Ok(())
+                        }).unwrap();
+                    }
+                }
+
+                prop_assert!(
+                    store.tree.check_invariants().is_ok(),
+                    "check_invariants failed after step {}: {:?}",
+                    step,
+                    op
+                );
+
+                let actual = store.scan().unwrap();
+                let expected = model_scan(&model);
+                prop_assert_eq!(actual, expected, "model mismatch after step {}: {:?}", step, op);
+            }
+
+            drop(store);
+            let reopened = PageStore::open_with_passphrase(&path, "prop-diff-pass").unwrap();
+            prop_assert!(reopened.tree.check_invariants().is_ok(), "check_invariants failed after final reopen");
+            prop_assert_eq!(reopened.scan().unwrap(), model_scan(&model), "model mismatch after final reopen");
+
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&wal);
+        }
     }
 
     #[test]

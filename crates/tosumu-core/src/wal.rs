@@ -1346,11 +1346,34 @@ mod tests {
             );
         }
 
+        // Capture the real encrypted frames from the committed tree, then replace the
+        // normal post-commit WAL with a synthetic committed transaction so this test
+        // continues to exercise recovery after the WAL is truncated on clean commit.
+        let committed_bytes = std::fs::read(&db_p).unwrap();
+        let page_count = committed_bytes.len() / PAGE_SIZE;
+        let _ = std::fs::remove_file(&wal_p);
+        {
+            let mut w = WalWriter::create(&wal_p).unwrap();
+            w.append(&WalRecord::Begin { txn_id: 1 }).unwrap();
+            for pgno in 1..page_count {
+                let start = pgno * PAGE_SIZE;
+                let end = start + PAGE_SIZE;
+                let mut frame = Box::new([0u8; PAGE_SIZE]);
+                frame.copy_from_slice(&committed_bytes[start..end]);
+                w.append(&WalRecord::PageWrite {
+                    pgno: pgno as u64,
+                    page_version: 1,
+                    frame,
+                }).unwrap();
+            }
+            w.append(&WalRecord::Commit { txn_id: 1 }).unwrap();
+            w.sync().unwrap();
+        }
+
         // 2. Simulate crash: zero every data page (1..page_count) in .tsm.
         //    Page 0 (plaintext header) is preserved — it holds page_count and
         //    root_page so the pager can seek to the right offsets during replay.
-        //    The WAL sidecar (fsynced inside commit_txn) remains on disk.
-        let mut raw = std::fs::read(&db_p).unwrap();
+        let mut raw = committed_bytes;
         for b in &mut raw[PAGE_SIZE..] { *b = 0; }
         std::fs::write(&db_p, &raw).unwrap();
 
